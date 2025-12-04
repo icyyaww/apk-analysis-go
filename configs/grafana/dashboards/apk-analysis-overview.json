@@ -1,0 +1,313 @@
+{
+  "dashboard": {
+    "title": "APK Analysis Platform - Overview",
+    "tags": ["apk-analysis", "overview"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "内存使用 (Memory Usage)",
+        "type": "graph",
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "apk_analysis_memory_usage_bytes / (1024 * 1024)",
+            "legendFormat": "内存使用 (MB)",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "MB",
+            "format": "short"
+          },
+          {
+            "show": false
+          }
+        ],
+        "alert": {
+          "name": "High Memory Usage",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [1536],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ]
+        }
+      },
+      {
+        "id": 2,
+        "title": "Goroutine 数量",
+        "type": "graph",
+        "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "apk_analysis_goroutines_count",
+            "legendFormat": "Goroutines",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Count",
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "任务统计 (Tasks)",
+        "type": "graph",
+        "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "rate(apk_analysis_tasks_total{status=\"completed\"}[5m])",
+            "legendFormat": "完成速率",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(apk_analysis_tasks_total{status=\"failed\"}[5m])",
+            "legendFormat": "失败速率",
+            "refId": "B"
+          },
+          {
+            "expr": "apk_analysis_tasks_in_progress",
+            "legendFormat": "进行中",
+            "refId": "C"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "API 请求延迟 (P50, P95, P99)",
+        "type": "graph",
+        "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(apk_analysis_http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "P50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(apk_analysis_http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "P95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(apk_analysis_http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "P99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Seconds",
+            "format": "s"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "数据库连接池",
+        "type": "graph",
+        "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "apk_analysis_db_connections_open",
+            "legendFormat": "总连接数",
+            "refId": "A"
+          },
+          {
+            "expr": "apk_analysis_db_connections_in_use",
+            "legendFormat": "使用中",
+            "refId": "B"
+          },
+          {
+            "expr": "apk_analysis_db_connections_idle",
+            "legendFormat": "空闲",
+            "refId": "C"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "title": "Worker Pool 状态",
+        "type": "graph",
+        "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "apk_analysis_worker_pool_size",
+            "legendFormat": "总 Workers",
+            "refId": "A"
+          },
+          {
+            "expr": "apk_analysis_worker_pool_active",
+            "legendFormat": "活跃 Workers",
+            "refId": "B"
+          },
+          {
+            "expr": "apk_analysis_worker_pool_queue_size",
+            "legendFormat": "队列积压",
+            "refId": "C"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "HTTP 请求速率 (按状态码)",
+        "type": "graph",
+        "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "sum(rate(apk_analysis_http_requests_total{status=~\"2..\"}[5m]))",
+            "legendFormat": "2xx",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(apk_analysis_http_requests_total{status=~\"4..\"}[5m]))",
+            "legendFormat": "4xx",
+            "refId": "B"
+          },
+          {
+            "expr": "sum(rate(apk_analysis_http_requests_total{status=~\"5..\"}[5m]))",
+            "legendFormat": "5xx",
+            "refId": "C"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "GC 统计",
+        "type": "graph",
+        "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "rate(apk_analysis_gc_count[1m])",
+            "legendFormat": "GC 频率 (次/分钟)",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "系统指标概览",
+        "type": "stat",
+        "gridPos": { "x": 0, "y": 32, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "apk_analysis_tasks_in_progress",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area",
+          "colorMode": "value"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "displayName": "任务进行中",
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 10,
+        "title": "总任务数 (24h)",
+        "type": "stat",
+        "gridPos": { "x": 6, "y": 32, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "sum(increase(apk_analysis_tasks_total[24h]))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "displayName": "24h 总任务",
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 11,
+        "title": "成功率 (1h)",
+        "type": "stat",
+        "gridPos": { "x": 12, "y": 32, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "sum(increase(apk_analysis_tasks_total{status=\"completed\"}[1h])) / sum(increase(apk_analysis_tasks_total[1h]))",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "displayName": "成功率",
+            "unit": "percentunit",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                { "value": 0, "color": "red" },
+                { "value": 0.8, "color": "yellow" },
+                { "value": 0.95, "color": "green" }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 12,
+        "title": "平均任务耗时 (1h)",
+        "type": "stat",
+        "gridPos": { "x": 18, "y": 32, "w": 6, "h": 4 },
+        "targets": [
+          {
+            "expr": "rate(apk_analysis_task_duration_seconds_sum[1h]) / rate(apk_analysis_task_duration_seconds_count[1h])",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "graphMode": "area"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "displayName": "平均耗时",
+            "unit": "s"
+          }
+        }
+      }
+    ],
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m"]
+    },
+    "templating": {
+      "list": []
+    }
+  },
+  "overwrite": true
+}

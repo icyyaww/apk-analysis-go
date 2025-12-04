@@ -1,0 +1,82 @@
+server:
+  port: 8080
+  mode: release  # debug, release
+
+database:
+  type: mysql  # mysql, sqlite
+  host: your-database-host.com
+  port: 3306
+  user: root
+  password: your_database_password
+  db_name: apk_analysis_go
+
+redis:
+  host: redis
+  port: 6379
+  password: ""
+  db: 0
+
+rabbitmq:
+  host: rabbitmq
+  port: 5672
+  user: user
+  password: pass
+  vhost: /
+  queue: apk_tasks
+
+# ============================================
+# 静态分析配置 (Hybrid: Go + Androguard)
+# ============================================
+static_analysis:
+  # 混合分析器配置
+  # 使用 Androguard 从 DEX 字节码中提取 URL（比资源文件扫描更全面）
+  hybrid:
+    enabled: true  # 启用混合分析 (Go快速分析 + Python Androguard DEX提取)
+    python_path: /usr/bin/python3
+    script_path: /app/scripts/analyze_apk.py  # Androguard DEX 分析脚本
+    use_process_pool: false  # 直接调用 Python 脚本，避免进程池开销
+    process_pool_size: 3
+
+    # 深度分析决策配置
+    force_deep_analysis: true  # 建议设为 true，始终进行 DEX 深度分析以获取完整 URL
+
+    # 深度分析决策阈值（仅在 force_deep_analysis=false 时生效）
+    deep_analysis_threshold:
+      file_size_mb: 10  # 超过10MB的APK使用深度分析
+      activity_count: 20  # 超过20个Activity的APK使用深度分析
+      enable_for_high_priority_packages: true  # 高优先级包（如银行、支付类）自动使用深度分析
+
+ai:
+  enabled: true
+  api_key: your_zhipu_glm_api_key
+  model: glm-4v-flash
+  max_actions: 20
+
+adb:
+  target: android-emulator:5555
+  timeout: 30  # seconds
+
+mitmproxy:
+  host: mitmproxy
+  port: 8082
+
+worker:
+  concurrency: 1  # Worker 数量（设置为设备数量，避免多个任务同时竞争设备）
+  queue_size: 100  # 任务队列大小
+
+log:
+  level: info  # debug, info, warn, error
+  format: text  # json, text
+
+# 备案查询配置 (站长之家API)
+beian:
+  enabled: true  # 是否启用备案查询
+  api_key: "your_chinaz_api_key"
+  api_url: "http://openapiu67.chinaz.net/v1/1001/icpappunit"
+  api_version: "1.0"
+  timeout: 70     # seconds (建议不低于60秒)
+
+# 目录配置
+apk_dir: ./inbound_apks
+result_dir: ./results
+data_dir: ./data

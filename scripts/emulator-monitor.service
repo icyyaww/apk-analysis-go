@@ -1,0 +1,17 @@
+[Unit]
+Description=Android Emulator Health Monitor
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=icyyaww
+Group=icyyaww
+ExecStart=/home/icyyaww/project/动态apk解析/apk-analysis-go/scripts/emulator_health_monitor.sh
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+            background: #F5F7FA;
+            min-height: 100vh;
+        }
+
+        /* 侧边栏 */
+        .sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 70px;
+            background: #1E293B;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px 0;
+            z-index: 1000;
+        }
+
+        .sidebar .logo {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #5B68FF 0%, #8B5CF6 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 40px;
+            cursor: pointer;
+        }
+
+        .sidebar .nav-icon {
+            width: 45px;
+            height: 45px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #94A3B8;
+            font-size: 20px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .sidebar .nav-icon:hover {
+            background: rgba(94, 104, 255, 0.1);
+            color: #5B68FF;
+        }
+
+        .sidebar .nav-icon.active {
+            background: rgba(94, 104, 255, 0.15);
+            color: #5B68FF;
+        }
+
+        /* 主内容区 */
+        .main-content {
+            margin-left: 70px;
+            padding: 30px;
+            min-height: 100vh;
+        }
+
+        /* 顶部导航 */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            color: #1E293B;
+            font-weight: 600;
+        }
+
+        .back-btn {
+            background: #5B68FF;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 10px;
+            border: none;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s;
+            box-shadow: 0 2px 8px rgba(91, 104, 255, 0.3);
+            text-decoration: none;
+        }
+
+        .back-btn:hover {
+            background: #4A56E8;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(91, 104, 255, 0.4);
+        }
+
+        /* Tab 切换 */
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #E2E8F0;
+        }
+
+        .tab-button {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: #64748B;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            bottom: -2px;
+        }
+
+        .tab-button:hover {
+            color: #5B68FF;
+        }
+
+        .tab-button.active {
+            color: #5B68FF;
+            border-bottom-color: #5B68FF;
+        }
+
+        /* Tab 内容 */
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* URL 卡片 */
+        .url-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .url-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .url-count {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1E293B;
+        }
+
+        .url-count .count {
+            color: #5B68FF;
+            font-size: 24px;
+            margin-left: 8px;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 10px;
+        }
+
+        .search-input {
+            padding: 8px 16px;
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+            font-size: 14px;
+            width: 300px;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: #5B68FF;
+        }
+
+        .export-button {
+            padding: 8px 16px;
+            background: #5B68FF;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .export-button:hover {
+            background: #4C5EEB;
+        }
+
+        /* URL 表格 */
+        .url-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .url-table thead {
+            background: #F8FAFC;
+        }
+
+        .url-table th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #64748B;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .url-table td {
+            padding: 14px 12px;
+            border-top: 1px solid #F1F5F9;
+            color: #475569;
+            font-size: 14px;
+        }
+
+        .url-table tr:hover {
+            background: #F8FAFC;
+        }
+
+        .url-link {
+            color: #5B68FF;
+            text-decoration: none;
+            word-break: break-all;
+        }
+
+        .url-link:hover {
+            text-decoration: underline;
+        }
+
+        .method-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .method-GET {
+            background: #DBEAFE;
+            color: #1E40AF;
+        }
+
+        .method-POST {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+
+        .method-PUT {
+            background: #FEF3C7;
+            color: #92400E;
+        }
+
+        .method-DELETE {
+            background: #FEE2E2;
+            color: #991B1B;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-2xx {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+
+        .status-3xx {
+            background: #DBEAFE;
+            color: #1E40AF;
+        }
+
+        .status-4xx {
+            background: #FEF3C7;
+            color: #92400E;
+        }
+
+        .status-5xx {
+            background: #FEE2E2;
+            color: #991B1B;
+        }
+
+        .source-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            background: #F1F5F9;
+            color: #64748B;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #94A3B8;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state-text {
+            font-size: 16px;
+        }
+
+        /* 加载状态 */
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748B;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #F1F5F9;
+            border-top-color: #5B68FF;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- 侧边栏 -->
+    <div class="sidebar">
+        <div class="logo" onclick="location.href='/'">A</div>
+        <div class="nav-icon" onclick="location.href='/'">📊</div>
+        <div class="nav-icon active">🔗</div>
+    </div>
+
+    <!-- 主内容区 -->
+    <div class="main-content">
+        <!-- 顶部导航 -->
+        <div class="header">
+            <h1>🔗 URL 分析</h1>
+            <a href="/" class="back-btn">
+                <span>←</span>
+                <span>返回任务列表</span>
+            </a>
+        </div>
+
+        <!-- Tab 切换 -->
+        <div class="tabs">
+            <button class="tab-button active" onclick="switchTab('static')">
+                静态分析 URL
+            </button>
+            <button class="tab-button" onclick="switchTab('dynamic')">
+                动态分析 URL
+            </button>
+        </div>
+
+        <!-- 静态 URL Tab -->
+        <div id="static-tab" class="tab-content active">
+            <div class="url-card">
+                <div class="url-header">
+                    <div class="url-count">
+                        总数：<span class="count" id="static-count">0</span>
+                    </div>
+                    <div class="search-box">
+                        <input type="text" class="search-input" id="static-search" placeholder="搜索 URL...">
+                        <button class="export-button" onclick="exportURLs('static')">导出</button>
+                    </div>
+                </div>
+                <div id="static-content">
+                    <div class="loading">
+                        <div class="loading-spinner"></div>
+                        <div>加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 动态 URL Tab -->
+        <div id="dynamic-tab" class="tab-content">
+            <div class="url-card">
+                <div class="url-header">
+                    <div class="url-count">
+                        总数：<span class="count" id="dynamic-count">0</span>
+                    </div>
+                    <div class="search-box">
+                        <input type="text" class="search-input" id="dynamic-search" placeholder="搜索 URL...">
+                        <button class="export-button" onclick="exportURLs('dynamic')">导出</button>
+                    </div>
+                </div>
+                <div id="dynamic-content">
+                    <div class="loading">
+                        <div class="loading-spinner"></div>
+                        <div>加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 获取任务 ID
+        const taskId = window.location.pathname.split('/')[2];
+
+        let staticURLs = [];
+        let dynamicURLs = [];
+
+        // 加载 URL 数据
+        async function loadURLs() {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/urls`);
+                const data = await response.json();
+
+                staticURLs = data.static_urls || [];
+                dynamicURLs = data.dynamic_urls || [];
+
+                // 更新计数
+                document.getElementById('static-count').textContent = data.static_count || 0;
+                document.getElementById('dynamic-count').textContent = data.dynamic_count || 0;
+
+                // 渲染表格
+                renderStaticURLs(staticURLs);
+                renderDynamicURLs(dynamicURLs);
+            } catch (error) {
+                console.error('Failed to load URLs:', error);
+                document.getElementById('static-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <div class="empty-state-text">加载失败，请稍后重试</div>
+                    </div>
+                `;
+                document.getElementById('dynamic-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <div class="empty-state-text">加载失败，请稍后重试</div>
+                    </div>
+                `;
+            }
+        }
+
+        // 渲染静态 URL 表格
+        function renderStaticURLs(urls, searchTerm = '') {
+            const filteredURLs = urls.filter(item =>
+                item.url.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+
+            if (filteredURLs.length === 0) {
+                document.getElementById('static-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <div class="empty-state-text">暂无静态分析 URL</div>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = `
+                <table class="url-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 60px;">序号</th>
+                            <th>URL</th>
+                            <th style="width: 150px;">来源</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            filteredURLs.forEach((item, index) => {
+                html += `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td><a href="${item.url}" class="url-link" target="_blank">${item.url}</a></td>
+                        <td><span class="source-badge">${item.source || 'MobSF'}</span></td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            document.getElementById('static-content').innerHTML = html;
+        }
+
+        // 渲染动态 URL 表格
+        function renderDynamicURLs(urls, searchTerm = '') {
+            const filteredURLs = urls.filter(item =>
+                item.url.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+
+            if (filteredURLs.length === 0) {
+                document.getElementById('dynamic-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <div class="empty-state-text">暂无动态分析 URL</div>
+                    </div>
+                `;
+                return;
+            }
+
+            let html = `
+                <table class="url-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 60px;">序号</th>
+                            <th>URL</th>
+                            <th style="width: 100px;">Method</th>
+                            <th style="width: 100px;">Status</th>
+                            <th style="width: 180px;">时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            filteredURLs.forEach((item, index) => {
+                const method = item.method || 'GET';
+                const statusCode = item.status_code || 0;
+                const statusClass = statusCode >= 500 ? 'status-5xx' :
+                                   statusCode >= 400 ? 'status-4xx' :
+                                   statusCode >= 300 ? 'status-3xx' :
+                                   statusCode >= 200 ? 'status-2xx' : '';
+
+                const timestamp = item.timestamp ? new Date(item.timestamp * 1000).toLocaleString('zh-CN') : '-';
+
+                html += `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td><a href="${item.url}" class="url-link" target="_blank">${item.url}</a></td>
+                        <td><span class="method-badge method-${method}">${method}</span></td>
+                        <td><span class="status-badge ${statusClass}">${statusCode || '-'}</span></td>
+                        <td>${timestamp}</td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            document.getElementById('dynamic-content').innerHTML = html;
+        }
+
+        // 切换 Tab
+        function switchTab(tab) {
+            // 更新 Tab 按钮状态
+            document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+
+            // 更新 Tab 内容显示
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(`${tab}-tab`).classList.add('active');
+        }
+
+        // 搜索功能
+        document.getElementById('static-search').addEventListener('input', (e) => {
+            renderStaticURLs(staticURLs, e.target.value);
+        });
+
+        document.getElementById('dynamic-search').addEventListener('input', (e) => {
+            renderDynamicURLs(dynamicURLs, e.target.value);
+        });
+
+        // 导出 URL
+        function exportURLs(type) {
+            const urls = type === 'static' ? staticURLs : dynamicURLs;
+            if (urls.length === 0) {
+                alert('没有可导出的 URL');
+                return;
+            }
+
+            const content = urls.map(item => item.url).join('\n');
+            const blob = new Blob([content], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${type}_urls_${taskId}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 页面加载时获取 URL 数据
+        loadURLs();
+    </script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+apk-analysis-server
+server
+server_*
+brand_new_server
+
+# Test coverage
+*.out
+coverage.html
+
+# Go workspace
+go.work
+go.work.sum
+/vendor/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+deps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Application runtime data
+data/
+results/
+inbound_apks/*.apk
+*.log
+*.jsonl
+
+# Docker
+docker-compose.override.yml
+android-data-*/
+
+# Environment and configs (use .example templates)
+.env
+.env.local
+configs/config.yaml
+
+# Certificates (sensitive)
+*.pem
+*.cer
+*.crt
+*.key
+!/scripts/*.example.pem
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+/tmp/

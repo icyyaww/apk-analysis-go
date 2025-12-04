@@ -1,0 +1,328 @@
+version: '3.8'
+
+# APK Analysis Platform - Production Deployment
+# Go 版本生产环境完整配置
+
+services:
+  # ============================================
+  # 主应用服务
+  # ============================================
+
+  apk-analysis-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: apk-analysis-go:latest
+    container_name: apk-analysis-server
+    ports:
+      - "8080:8080"
+    environment:
+      - GIN_MODE=release
+      - DB_TYPE=mysql
+      - MYSQL_HOST=${MYSQL_HOST}
+      - MYSQL_PORT=${MYSQL_PORT}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASS=${MYSQL_PASS}
+      - MYSQL_DB=${MYSQL_DB}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER}
+      - RABBITMQ_PASS=${RABBITMQ_PASS}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - ADB_TARGET=android-emulator:5555
+      - MITM_PROXY_HOST=mitmproxy
+      - ZAI_API_KEY=${ZAI_API_KEY}
+      - LOG_LEVEL=info
+      # AI智能交互配置
+      - AI_INTERACTION_ENABLED=${AI_INTERACTION_ENABLED:-false}
+      - GLM_API_KEY=${GLM_API_KEY}
+      - PATH=/opt/android-sdk/platform-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    restart: unless-stopped
+    networks:
+      - apk-network
+    volumes:
+      - ./inbound_apks:/app/inbound_apks
+      - ./results:/app/results
+      - ./logs:/app/logs
+      - ./configs:/app/configs:ro
+      - ./scripts:/app/scripts:ro
+      - ./web:/app/web:ro
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
+
+  # ============================================
+  # MySQL 数据库 (使用外部阿里云 RDS)
+  # ============================================
+  # 注意: 本项目使用外部阿里云 RDS 数据库
+  # MYSQL_HOST=rm-cn-x0r388op0000ltuo.rwlb.zhangbei.rds.aliyuncs.com
+  # 因此不需要启动本地 MySQL 容器
+
+  # ============================================
+  # RabbitMQ 消息队列
+  # ============================================
+
+  rabbitmq:
+    image: rabbitmq:3.11-management
+    container_name: apk-analysis-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    ports:
+      - "5672:5672"      # AMQP
+      - "15672:15672"    # Management UI
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    restart: unless-stopped
+    networks:
+      - apk-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # ============================================
+  # Redis 缓存
+  # ============================================
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: apk-analysis-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - apk-network
+
+  # ============================================
+  # Prometheus 监控
+  # ============================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: apk-analysis-prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deployments/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deployments/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - apk-network
+
+  # ============================================
+  # Grafana 可视化
+  # ============================================
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: apk-analysis-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-clock-panel
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deployments/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./deployments/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    restart: unless-stopped
+    networks:
+      - apk-network
+    depends_on:
+      - prometheus
+
+  # ============================================
+  # Android Emulator (双模拟器热备份)
+  # ============================================
+
+  # 模拟器1（主设备）
+  android-emulator-1:
+    image: budtmo/docker-android:emulator_10.0
+    container_name: apk-analysis-android-emulator-1
+    privileged: true
+    ports:
+      - "6080:6080"      # noVNC Web界面
+      - "5554:5554"      # 模拟器控制台
+      - "5555:5555"      # ADB连接
+    environment:
+      - DEVICE=Samsung Galaxy S21
+      - EMULATOR_ARGS=-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+    devices:
+      - /dev/kvm:/dev/kvm
+    group_add:
+      - "993"  # KVM group ID
+    volumes:
+      - android-data-1:/root
+    restart: unless-stopped
+    networks:
+      - apk-network
+    deploy:
+      resources:
+        limits:
+          cpus: '3'      # 优化：从4降到3
+          memory: 4G     # 优化：从6G降到4G
+        reservations:
+          cpus: '1.5'    # 优化：从2降到1.5
+          memory: 3G     # 优化：从4G降到3G
+    shm_size: 1.5gb      # 优化：从2GB降到1.5GB
+
+  # 模拟器2（备份设备）
+  android-emulator-2:
+    image: budtmo/docker-android:emulator_10.0
+    container_name: apk-analysis-android-emulator-2
+    privileged: true
+    ports:
+      - "6081:6080"      # noVNC Web界面（不同端口）
+      - "5556:5554"      # 模拟器控制台（不同端口）
+      - "5557:5555"      # ADB连接（不同端口）
+    environment:
+      - DEVICE=Samsung Galaxy S21
+      - EMULATOR_ARGS=-no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+    devices:
+      - /dev/kvm:/dev/kvm
+    group_add:
+      - "993"  # KVM group ID
+    volumes:
+      - android-data-2:/root
+    restart: unless-stopped
+    networks:
+      - apk-network
+    deploy:
+      resources:
+        limits:
+          cpus: '3'      # 优化：从4降到3
+          memory: 4G     # 优化：从6G降到4G
+        reservations:
+          cpus: '1.5'    # 优化：从2降到1.5
+          memory: 3G     # 优化：从4G降到3G
+    shm_size: 1.5gb      # 优化：从2GB降到1.5GB
+
+  # ============================================
+  # MobSF 已移除 - 使用 Hybrid 静态分析 (Go + Androguard)
+  # ============================================
+
+  # ============================================
+  # Mitmproxy 流量拦截（双实例）
+  # ============================================
+
+  # Mitmproxy-1（为模拟器1服务）
+  mitmproxy-1:
+    image: mitmproxy/mitmproxy:latest
+    container_name: apk-analysis-mitmproxy-1
+    ports:
+      - "8082:8082"      # 代理端口
+      - "8083:8083"      # API端口
+    volumes:
+      - ./results:/results
+      - ./scripts:/scripts:ro
+      - mitmproxy-certs-1:/home/mitmproxy/.mitmproxy
+    command: >
+      mitmdump
+      --set block_global=false
+      --set confdir=/home/mitmproxy/.mitmproxy
+      --listen-host 0.0.0.0
+      --listen-port 8082
+      --ssl-insecure
+      --mode regular
+      -s /scripts/mitm_jsonl_writer.py
+    restart: unless-stopped
+    networks:
+      - apk-network
+
+  # Mitmproxy-2（为模拟器2服务）
+  mitmproxy-2:
+    image: mitmproxy/mitmproxy:latest
+    container_name: apk-analysis-mitmproxy-2
+    ports:
+      - "8084:8082"      # 代理端口（不同端口）
+      - "8085:8083"      # API端口（不同端口）
+    volumes:
+      - ./results:/results
+      - ./scripts:/scripts:ro
+      - mitmproxy-certs-2:/home/mitmproxy/.mitmproxy
+    command: >
+      mitmdump
+      --set block_global=false
+      --set confdir=/home/mitmproxy/.mitmproxy
+      --listen-host 0.0.0.0
+      --listen-port 8082
+      --ssl-insecure
+      --mode regular
+      -s /scripts/mitm_jsonl_writer.py
+    restart: unless-stopped
+    networks:
+      - apk-network
+
+  # ============================================
+  # Nginx 反向代理 (可选)
+  # ============================================
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: apk-analysis-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deployments/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./deployments/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./deployments/nginx/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+    depends_on:
+      - apk-analysis-server
+    restart: unless-stopped
+    networks:
+      - apk-network
+
+networks:
+  apk-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  # mysql-data 不需要 (使用外部 RDS)
+  rabbitmq-data:
+    driver: local
+  redis-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  android-data-1:
+    driver: local
+  android-data-2:
+    driver: local
+  mitmproxy-certs-1:
+    driver: local
+  mitmproxy-certs-2:
+    driver: local

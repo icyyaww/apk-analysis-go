@@ -1,0 +1,191 @@
+groups:
+  - name: apk_analysis_alerts
+    interval: 30s
+    rules:
+      # 内存告警
+      - alert: HighMemoryUsage
+        expr: apk_analysis_memory_usage_bytes / (1024 * 1024 * 1024) > 1.5
+        for: 2m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "内存使用过高"
+          description: "内存使用超过 1.5GB,当前值: {{ $value | humanize }}GB"
+
+      - alert: CriticalMemoryUsage
+        expr: apk_analysis_memory_usage_bytes / (1024 * 1024 * 1024) > 2.0
+        for: 1m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "内存使用严重超标"
+          description: "内存使用超过 2GB (目标值),当前值: {{ $value | humanize }}GB"
+
+      # Goroutine 泄漏告警
+      - alert: GoroutineLeakSuspected
+        expr: apk_analysis_goroutines_count > 200
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "疑似 Goroutine 泄漏"
+          description: "Goroutine 数量持续超过 200,当前值: {{ $value }}"
+
+      - alert: GoroutineCritical
+        expr: apk_analysis_goroutines_count > 500
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Goroutine 数量严重异常"
+          description: "Goroutine 数量超过 500,当前值: {{ $value }}"
+
+      # 任务失败率告警
+      - alert: HighTaskFailureRate
+        expr: |
+          (
+            rate(apk_analysis_tasks_total{status="failed"}[5m]) /
+            rate(apk_analysis_tasks_total[5m])
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          component: task
+        annotations:
+          summary: "任务失败率过高"
+          description: "最近 5 分钟任务失败率超过 20%,当前值: {{ $value | humanizePercentage }}"
+
+      - alert: CriticalTaskFailureRate
+        expr: |
+          (
+            rate(apk_analysis_tasks_total{status="failed"}[5m]) /
+            rate(apk_analysis_tasks_total[5m])
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: critical
+          component: task
+        annotations:
+          summary: "任务失败率严重过高"
+          description: "最近 5 分钟任务失败率超过 50%,当前值: {{ $value | humanizePercentage }}"
+
+      # API 响应延迟告警
+      - alert: HighAPILatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(apk_analysis_http_request_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API 响应延迟过高"
+          description: "P95 延迟超过 500ms,当前值: {{ $value | humanizeDuration }}"
+
+      - alert: CriticalAPILatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(apk_analysis_http_request_duration_seconds_bucket[5m])
+          ) > 2
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API 响应延迟严重超标"
+          description: "P95 延迟超过 2s,当前值: {{ $value | humanizeDuration }}"
+
+      # 数据库连接池告警
+      - alert: DBConnectionPoolExhaustion
+        expr: apk_analysis_db_connections_in_use / apk_analysis_db_connections_open > 0.9
+        for: 2m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "数据库连接池即将耗尽"
+          description: "连接池使用率超过 90%,当前使用: {{ $value | humanizePercentage }}"
+
+      - alert: DBConnectionPoolFull
+        expr: apk_analysis_db_connections_in_use >= apk_analysis_db_connections_open
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "数据库连接池已耗尽"
+          description: "所有数据库连接已被占用,可能影响服务"
+
+      # Worker Pool 告警
+      - alert: WorkerPoolQueueBacklog
+        expr: apk_analysis_worker_pool_queue_size > 20
+        for: 5m
+        labels:
+          severity: warning
+          component: worker
+        annotations:
+          summary: "Worker Pool 队列积压"
+          description: "队列中等待任务超过 20 个,当前值: {{ $value }}"
+
+      - alert: WorkerPoolQueueCritical
+        expr: apk_analysis_worker_pool_queue_size > 50
+        for: 2m
+        labels:
+          severity: critical
+          component: worker
+        annotations:
+          summary: "Worker Pool 队列严重积压"
+          description: "队列中等待任务超过 50 个,当前值: {{ $value }}"
+
+      # GC 频率告警
+      - alert: HighGCFrequency
+        expr: rate(apk_analysis_gc_count[1m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "GC 频率过高"
+          description: "每分钟 GC 次数超过 10 次,当前值: {{ $value }}"
+
+      # HTTP 5xx 错误率告警
+      - alert: HighHTTP5xxRate
+        expr: |
+          (
+            sum(rate(apk_analysis_http_requests_total{status=~"5.."}[5m])) /
+            sum(rate(apk_analysis_http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "HTTP 5xx 错误率过高"
+          description: "最近 5 分钟 5xx 错误率超过 5%,当前值: {{ $value | humanizePercentage }}"
+
+      # 服务可用性告警
+      - alert: ServiceDown
+        expr: up{job="apk-analysis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "服务不可用"
+          description: "APK Analysis 服务无法访问,请立即检查"
+
+      # 任务长时间运行告警
+      - alert: LongRunningTask
+        expr: apk_analysis_tasks_in_progress > 0 and time() - apk_analysis_task_start_time > 3600
+        for: 5m
+        labels:
+          severity: warning
+          component: task
+        annotations:
+          summary: "任务运行时间过长"
+          description: "存在运行超过 1 小时的任务,可能卡死"

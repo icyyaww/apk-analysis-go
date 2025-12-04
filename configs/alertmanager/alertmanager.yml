@@ -1,0 +1,118 @@
+global:
+  resolve_timeout: 5m
+  # SMTP 配置 (邮件告警)
+  smtp_smarthost: 'smtp.example.com:587'
+  smtp_from: 'alerts@apk-analysis.com'
+  smtp_auth_username: 'alerts@apk-analysis.com'
+  smtp_auth_password: 'your_password_here'
+  smtp_require_tls: true
+
+# 告警路由配置
+route:
+  # 默认接收者
+  receiver: 'default-receiver'
+
+  # 分组配置
+  group_by: ['alertname', 'component', 'severity']
+  group_wait: 30s           # 分组等待时间
+  group_interval: 5m        # 分组告警发送间隔
+  repeat_interval: 12h      # 重复告警间隔
+
+  # 路由规则
+  routes:
+    # 严重级别告警 (立即发送)
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # 警告级别告警
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+      group_wait: 30s
+      repeat_interval: 6h
+
+    # 系统组件告警
+    - match:
+        component: system
+      receiver: 'system-alerts'
+
+    # 任务相关告警
+    - match:
+        component: task
+      receiver: 'task-alerts'
+
+    # 数据库告警
+    - match:
+        component: database
+      receiver: 'database-alerts'
+
+# 接收者配置
+receivers:
+  # 默认接收者 (仅日志)
+  - name: 'default-receiver'
+    webhook_configs:
+      - url: 'http://alertmanager-webhook:8080/alerts'
+        send_resolved: true
+
+  # 严重告警 (邮件 + Webhook)
+  - name: 'critical-alerts'
+    email_configs:
+      - to: 'ops-team@example.com'
+        headers:
+          Subject: '[CRITICAL] APK Analysis Platform Alert'
+        html: |
+          <h3>🚨 严重告警</h3>
+          <p><strong>告警名称:</strong> {{ .GroupLabels.alertname }}</p>
+          <p><strong>组件:</strong> {{ .GroupLabels.component }}</p>
+          <p><strong>描述:</strong> {{ .CommonAnnotations.description }}</p>
+          <p><strong>时间:</strong> {{ .StartsAt }}</p>
+    webhook_configs:
+      - url: 'http://alertmanager-webhook:8080/critical'
+        send_resolved: true
+
+  # 警告级别告警 (仅邮件)
+  - name: 'warning-alerts'
+    email_configs:
+      - to: 'dev-team@example.com'
+        headers:
+          Subject: '[WARNING] APK Analysis Platform Alert'
+
+  # 系统告警
+  - name: 'system-alerts'
+    email_configs:
+      - to: 'sre-team@example.com'
+        headers:
+          Subject: '[SYSTEM] APK Analysis Alert'
+
+  # 任务告警
+  - name: 'task-alerts'
+    email_configs:
+      - to: 'dev-team@example.com'
+        headers:
+          Subject: '[TASK] APK Analysis Alert'
+
+  # 数据库告警
+  - name: 'database-alerts'
+    email_configs:
+      - to: 'dba-team@example.com'
+        headers:
+          Subject: '[DATABASE] APK Analysis Alert'
+
+# 抑制规则 (避免告警风暴)
+inhibit_rules:
+  # 严重告警会抑制警告告警
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'component']
+
+  # 服务宕机会抑制其他所有告警
+  - source_match:
+      alertname: 'ServiceDown'
+    target_match_re:
+      alertname: '.*'
+    equal: ['component']

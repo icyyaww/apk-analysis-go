@@ -1,0 +1,92 @@
+# Prometheus Configuration for Canary Deployment
+# 灰度发布监控配置 - 同时监控 Python 和 Go 版本
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'canary'
+    cluster: 'apk-analysis'
+
+# 告警规则
+rule_files:
+  - '/etc/prometheus/rules/*.yml'
+
+# 抓取配置
+scrape_configs:
+  # ============================================
+  # Python 版本 (现有生产环境)
+  # ============================================
+
+  - job_name: 'apk-analysis-python'
+    static_configs:
+      - targets: ['python-backend:9091']
+        labels:
+          version: 'python'
+          backend: 'python'
+          weight: '90'
+
+  # ============================================
+  # Go 版本 (灰度发布)
+  # ============================================
+
+  - job_name: 'apk-analysis-go'
+    static_configs:
+      - targets: ['go-backend:9090']
+        labels:
+          version: 'go'
+          backend: 'go'
+          weight: '10'
+
+  # ============================================
+  # Nginx (负载均衡器)
+  # ============================================
+
+  - job_name: 'nginx-canary'
+    static_configs:
+      - targets: ['nginx-canary:9113']  # nginx-prometheus-exporter
+        labels:
+          component: 'load-balancer'
+
+  # ============================================
+  # 基础设施
+  # ============================================
+
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['mysql-exporter:9104']
+        labels:
+          component: 'database'
+
+  - job_name: 'rabbitmq'
+    static_configs:
+      - targets: ['rabbitmq:15692']
+        labels:
+          component: 'message-queue'
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          component: 'cache'
+
+# ============================================
+# 告警管理器 (可选)
+# ============================================
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 'alertmanager:9093'
+
+# ============================================
+# 远程存储 (可选 - 长期存储)
+# ============================================
+
+# remote_write:
+#   - url: "http://victoriametrics:8428/api/v1/write"
+#     queue_config:
+#       max_samples_per_send: 10000
+#       batch_send_deadline: 5s
+#       max_shards: 30

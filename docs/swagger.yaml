@@ -1,0 +1,353 @@
+swagger: "2.0"
+info:
+  title: APK Analysis Platform API
+  description: |
+    APK 动态分析平台 - Go 版本 REST API 文档
+
+    本 API 提供 APK 文件的自动化分析服务，包括：
+    - 任务管理（创建、查询、更新、删除）
+    - Activity 分析
+    - 网络流量捕获与归因
+    - MobSF 静态安全分析
+    - AI 智能交互
+    - 域名分析与备案查询
+    - 系统监控与统计
+  version: "1.0.0"
+  contact:
+    name: APK Analysis Team
+    email: support@apk-analysis.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+host: localhost:8080
+basePath: /api
+schemes:
+  - http
+  - https
+
+consumes:
+  - application/json
+produces:
+  - application/json
+
+tags:
+  - name: tasks
+    description: 任务管理
+  - name: stats
+    description: 系统统计
+  - name: health
+    description: 健康检查
+
+paths:
+  /tasks:
+    get:
+      tags:
+        - tasks
+      summary: 获取任务列表
+      description: 获取最近的任务列表，默认返回最近 50 条
+      parameters:
+        - name: limit
+          in: query
+          description: 返回任务数量限制
+          type: integer
+          default: 50
+          minimum: 1
+          maximum: 100
+        - name: status
+          in: query
+          description: 按状态过滤 (queued/running/completed/failed/cancelled)
+          type: string
+          enum: [queued, running, completed, failed, cancelled]
+      responses:
+        200:
+          description: 成功返回任务列表
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/Task'
+        500:
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/Error'
+
+  /tasks/{id}:
+    get:
+      tags:
+        - tasks
+      summary: 获取任务详情
+      description: 根据任务 ID 获取完整的任务信息
+      parameters:
+        - name: id
+          in: path
+          description: 任务 ID (UUID)
+          required: true
+          type: string
+          format: uuid
+      responses:
+        200:
+          description: 成功返回任务详情
+          schema:
+            $ref: '#/definitions/Task'
+        404:
+          description: 任务不存在
+          schema:
+            $ref: '#/definitions/Error'
+        500:
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/Error'
+
+    delete:
+      tags:
+        - tasks
+      summary: 删除任务
+      description: 删除指定任务及其相关数据
+      parameters:
+        - name: id
+          in: path
+          description: 任务 ID (UUID)
+          required: true
+          type: string
+          format: uuid
+      responses:
+        200:
+          description: 删除成功
+          schema:
+            $ref: '#/definitions/Message'
+        404:
+          description: 任务不存在
+          schema:
+            $ref: '#/definitions/Error'
+        500:
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/Error'
+
+  /tasks/{id}/stop:
+    post:
+      tags:
+        - tasks
+      summary: 停止任务
+      description: 停止正在运行的任务
+      parameters:
+        - name: id
+          in: path
+          description: 任务 ID (UUID)
+          required: true
+          type: string
+          format: uuid
+      responses:
+        200:
+          description: 停止成功
+          schema:
+            $ref: '#/definitions/Message'
+        400:
+          description: 任务不在运行状态
+          schema:
+            $ref: '#/definitions/Error'
+        404:
+          description: 任务不存在
+          schema:
+            $ref: '#/definitions/Error'
+        500:
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/Error'
+
+  /stats:
+    get:
+      tags:
+        - stats
+      summary: 获取系统统计
+      description: 获取系统整体统计信息，包括各状态任务数量
+      responses:
+        200:
+          description: 成功返回统计信息
+          schema:
+            $ref: '#/definitions/Stats'
+        500:
+          description: 服务器内部错误
+          schema:
+            $ref: '#/definitions/Error'
+
+  /health:
+    get:
+      tags:
+        - health
+      summary: 健康检查
+      description: 检查服务健康状态
+      responses:
+        200:
+          description: 服务正常
+          schema:
+            $ref: '#/definitions/Health'
+        503:
+          description: 服务不可用
+          schema:
+            $ref: '#/definitions/Error'
+
+definitions:
+  Task:
+    type: object
+    required:
+      - id
+      - apk_name
+      - status
+      - created_at
+    properties:
+      id:
+        type: string
+        format: uuid
+        description: 任务唯一 ID
+        example: "c4d540c2-2ed9-49bf-8ec4-8ad595ae2142"
+      apk_name:
+        type: string
+        description: APK 文件名
+        example: "zhihu.apk"
+      package_name:
+        type: string
+        description: 应用包名
+        example: "com.zhihu.android"
+      status:
+        type: string
+        enum: [queued, installing, running, collecting, completed, failed, cancelled]
+        description: 任务状态
+        example: "completed"
+      created_at:
+        type: string
+        format: date-time
+        description: 创建时间 (UTC)
+        example: "2025-11-05T08:30:15.123456Z"
+      started_at:
+        type: string
+        format: date-time
+        description: 开始时间 (UTC)
+        example: "2025-11-05T08:30:30.456789Z"
+      completed_at:
+        type: string
+        format: date-time
+        description: 完成时间 (UTC)
+        example: "2025-11-05T08:42:00.789012Z"
+      current_step:
+        type: string
+        description: 当前执行步骤
+        example: "正在分析 Activity"
+      progress_percent:
+        type: integer
+        minimum: 0
+        maximum: 100
+        description: 进度百分比
+        example: 75
+      error_message:
+        type: string
+        description: 错误信息（如果失败）
+        example: "设备连接失败"
+      device_connected:
+        type: boolean
+        description: 设备连接状态
+        example: true
+      launcher_activity:
+        type: string
+        description: 主 Activity
+        example: "com.zhihu.android/.app.ui.activity.MainActivity"
+      activities:
+        type: array
+        items:
+          type: string
+        description: Activity 列表
+        example: ["com.zhihu.android.MainActivity", "com.zhihu.android.LoginActivity"]
+      mobsf_status:
+        type: string
+        enum: [queued, uploading, scanning, completed, timeout, failed, skipped_no_api_key, service_unhealthy]
+        description: MobSF 分析状态
+        example: "completed"
+      mobsf_score:
+        type: integer
+        minimum: 0
+        maximum: 100
+        description: MobSF 安全评分
+        example: 72
+
+  Stats:
+    type: object
+    properties:
+      total_tasks:
+        type: integer
+        format: int64
+        description: 总任务数
+        example: 150
+      queued:
+        type: integer
+        format: int64
+        description: 排队中任务数
+        example: 5
+      running:
+        type: integer
+        format: int64
+        description: 运行中任务数
+        example: 2
+      completed:
+        type: integer
+        format: int64
+        description: 已完成任务数
+        example: 138
+      failed:
+        type: integer
+        format: int64
+        description: 失败任务数
+        example: 5
+      cancelled:
+        type: integer
+        format: int64
+        description: 已取消任务数
+        example: 0
+
+  Health:
+    type: object
+    properties:
+      status:
+        type: string
+        enum: [ok, degraded, down]
+        description: 服务状态
+        example: "ok"
+      timestamp:
+        type: string
+        format: date-time
+        description: 检查时间
+        example: "2025-11-05T12:00:00Z"
+      components:
+        type: object
+        properties:
+          database:
+            type: string
+            enum: [ok, down]
+            example: "ok"
+          rabbitmq:
+            type: string
+            enum: [ok, down]
+            example: "ok"
+          redis:
+            type: string
+            enum: [ok, down]
+            example: "ok"
+
+  Message:
+    type: object
+    properties:
+      message:
+        type: string
+        description: 操作结果消息
+        example: "任务已成功删除"
+
+  Error:
+    type: object
+    properties:
+      error:
+        type: string
+        description: 错误信息
+        example: "任务不存在"
+      code:
+        type: integer
+        description: 错误代码
+        example: 404

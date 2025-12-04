@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI智能交互实时监控</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .main-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        /* 设备屏幕区域 */
+        .device-screen {
+            background: white;
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .screen-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .screen-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .status-badge {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+
+        .status-active {
+            background: #4caf50;
+            color: white;
+        }
+
+        .status-waiting {
+            background: #ff9800;
+            color: white;
+        }
+
+        .screen-container {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+            margin: 0 auto;
+            background: #f5f5f5;
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .screen-image {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        /* AI点击标记 */
+        .click-marker {
+            position: absolute;
+            width: 40px;
+            height: 40px;
+            border: 3px solid #ff4444;
+            border-radius: 50%;
+            pointer-events: none;
+            animation: ripple 1.5s ease-out;
+            z-index: 100;
+        }
+
+        @keyframes ripple {
+            0% {
+                transform: translate(-50%, -50%) scale(0);
+                opacity: 1;
+            }
+            100% {
+                transform: translate(-50%, -50%) scale(2);
+                opacity: 0;
+            }
+        }
+
+        .click-info {
+            position: absolute;
+            background: rgba(255, 68, 68, 0.9);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 101;
+        }
+
+        /* AI动作日志区域 */
+        .action-log {
+            background: white;
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .log-header {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .action-item {
+            padding: 15px;
+            margin-bottom: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            border-radius: 8px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .action-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+
+        .action-item.new {
+            animation: slideIn 0.5s ease-out;
+            background: #fff3e0;
+            border-left-color: #ff9800;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(-100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .action-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .action-type {
+            display: inline-block;
+            padding: 3px 10px;
+            background: #667eea;
+            color: white;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+
+        .action-time {
+            color: #666;
+            font-size: 0.85em;
+        }
+
+        .action-details {
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .action-target {
+            font-weight: 500;
+            color: #667eea;
+        }
+
+        .action-coords {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #e8eaf6;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            margin-left: 5px;
+        }
+
+        /* 统计信息 */
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        /* 当前Activity信息 */
+        .current-activity {
+            background: white;
+            padding: 15px 20px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .activity-name {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .activity-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .pulse-dot {
+            width: 10px;
+            height: 10px;
+            background: #4caf50;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+            50% {
+                transform: scale(1.3);
+                opacity: 0.7;
+            }
+        }
+
+        /* 控制按钮 */
+        .control-buttons {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            margin-bottom: 30px;
+        }
+
+        .control-btn {
+            padding: 12px 30px;
+            background: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 1em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+
+        .control-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+        }
+
+        .control-btn.active {
+            background: #667eea;
+            color: white;
+        }
+
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 AI智能交互实时监控</h1>
+
+        <!-- 当前Activity信息 -->
+        <div class="current-activity">
+            <div>
+                <div class="activity-name" id="currentActivity">等待任务开始...</div>
+                <div style="color: #666; font-size: 0.9em; margin-top: 5px;">
+                    任务ID: <span id="taskId">-</span>
+                </div>
+            </div>
+            <div class="activity-status">
+                <div class="pulse-dot"></div>
+                <span id="connectionStatus">已连接</span>
+            </div>
+        </div>
+
+        <!-- 统计信息 -->
+        <div class="stats-container">
+            <div class="stat-card">
+                <div class="stat-value" id="totalActions">0</div>
+                <div class="stat-label">总操作数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="clickCount">0</div>
+                <div class="stat-label">点击次数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="scrollCount">0</div>
+                <div class="stat-label">滑动次数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="inputCount">0</div>
+                <div class="stat-label">输入次数</div>
+            </div>
+            <div class="stat-card" id="certStatusCard">
+                <div class="stat-value" id="certStatus">
+                    <span style="font-size: 0.6em;">检查中...</span>
+                </div>
+                <div class="stat-label">HTTPS证书</div>
+            </div>
+        </div>
+
+        <!-- 控制按钮 -->
+        <div class="control-buttons">
+            <button class="control-btn active" onclick="connectWebSocket()">连接</button>
+            <button class="control-btn" onclick="clearLog()">清空日志</button>
+            <button class="control-btn" onclick="exportLog()">导出日志</button>
+        </div>
+
+        <!-- 主内容区域 -->
+        <div class="main-grid">
+            <!-- 设备屏幕 -->
+            <div class="device-screen">
+                <div class="screen-header">
+                    <div class="screen-title">📱 设备屏幕</div>
+                    <div class="status-badge status-active" id="screenStatus">实时更新</div>
+                </div>
+                <div class="screen-container" id="screenContainer">
+                    <img id="screenImage" class="screen-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='800'%3E%3Crect fill='%23f0f0f0' width='400' height='800'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%23999' font-family='Arial' font-size='20'%3E等待截图...%3C/text%3E%3C/svg%3E" alt="设备屏幕">
+                    <!-- 点击标记将动态添加到这里 -->
+                </div>
+            </div>
+
+            <!-- AI动作日志 -->
+            <div class="action-log">
+                <div class="log-header">📝 AI动作日志</div>
+                <div id="actionLog">
+                    <div class="action-item">
+                        <div class="action-header">
+                            <span class="action-type">系统</span>
+                            <span class="action-time">等待中</span>
+                        </div>
+                        <div class="action-details">
+                            等待AI交互任务开始...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let stats = {
+            total: 0,
+            click: 0,
+            scroll: 0,
+            input: 0
+        };
+        let actionHistory = [];
+
+        function connectWebSocket() {
+            // 获取当前任务ID（从URL参数或默认值）
+            const urlParams = new URLSearchParams(window.location.search);
+            const taskId = urlParams.get('task_id') || 'latest';
+
+            // 连接WebSocket
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/ai-interaction/${taskId}`;
+
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                document.getElementById('connectionStatus').textContent = '已连接';
+                addLogEntry('系统', '已连接到AI交互监控服务');
+            };
+
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleAIAction(data);
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                document.getElementById('connectionStatus').textContent = '连接错误';
+            };
+
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                document.getElementById('connectionStatus').textContent = '已断开';
+                addLogEntry('系统', '连接已断开');
+            };
+        }
+
+        function handleAIAction(data) {
+            // 更新当前Activity
+            if (data.activity) {
+                document.getElementById('currentActivity').textContent = data.activity;
+            }
+
+            if (data.task_id) {
+                document.getElementById('taskId').textContent = data.task_id;
+            }
+
+            // 更新截图
+            if (data.screenshot) {
+                updateScreenshot(data.screenshot);
+            }
+
+            // 处理AI动作
+            if (data.action) {
+                processAction(data.action);
+            }
+
+            // 更新状态
+            if (data.status) {
+                updateStatus(data.status);
+            }
+        }
+
+        function updateScreenshot(screenshotUrl) {
+            const img = document.getElementById('screenImage');
+            img.src = screenshotUrl;
+
+            // 更新状态
+            const status = document.getElementById('screenStatus');
+            status.textContent = '已更新';
+            setTimeout(() => {
+                status.textContent = '实时更新';
+            }, 1000);
+        }
+
+        function processAction(action) {
+            // 更新统计
+            stats.total++;
+            if (action.type === 'click' || action.type === 'tap') {
+                stats.click++;
+            } else if (action.type === 'scroll' || action.type === 'swipe') {
+                stats.scroll++;
+            } else if (action.type === 'input' || action.type === 'text') {
+                stats.input++;
+            }
+
+            updateStats();
+
+            // 显示点击标记
+            if (action.x && action.y) {
+                showClickMarker(action.x, action.y, action.reason || action.type);
+            }
+
+            // 添加到日志
+            addActionLog(action);
+
+            // 保存到历史
+            actionHistory.push(action);
+        }
+
+        function showClickMarker(x, y, info) {
+            const container = document.getElementById('screenContainer');
+            const img = document.getElementById('screenImage');
+
+            // 计算相对位置
+            const imgRect = img.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+
+            const relativeX = (x / 1080) * img.width;  // 假设屏幕宽度1080
+            const relativeY = (y / 1920) * img.height; // 假设屏幕高度1920
+
+            // 创建点击标记
+            const marker = document.createElement('div');
+            marker.className = 'click-marker';
+            marker.style.left = relativeX + 'px';
+            marker.style.top = relativeY + 'px';
+
+            // 创建信息标签
+            const infoLabel = document.createElement('div');
+            infoLabel.className = 'click-info';
+            infoLabel.textContent = info;
+            infoLabel.style.left = (relativeX + 20) + 'px';
+            infoLabel.style.top = (relativeY - 30) + 'px';
+
+            container.appendChild(marker);
+            container.appendChild(infoLabel);
+
+            // 3秒后移除标记
+            setTimeout(() => {
+                marker.remove();
+                infoLabel.remove();
+            }, 3000);
+        }
+
+        function addActionLog(action) {
+            const logContainer = document.getElementById('actionLog');
+
+            const actionItem = document.createElement('div');
+            actionItem.className = 'action-item new';
+
+            const time = new Date().toLocaleTimeString();
+            const actionTypeText = getActionTypeText(action.type);
+
+            actionItem.innerHTML = `
+                <div class="action-header">
+                    <span class="action-type">${actionTypeText}</span>
+                    <span class="action-time">${time}</span>
+                </div>
+                <div class="action-details">
+                    <span class="action-target">${action.reason || '执行操作'}</span>
+                    ${action.x && action.y ? `<span class="action-coords">坐标: (${action.x}, ${action.y})</span>` : ''}
+                    ${action.priority ? `<br>优先级: ${action.priority}` : ''}
+                </div>
+            `;
+
+            // 添加到顶部
+            logContainer.insertBefore(actionItem, logContainer.firstChild);
+
+            // 限制日志数量
+            while (logContainer.children.length > 50) {
+                logContainer.removeChild(logContainer.lastChild);
+            }
+
+            // 移除new类
+            setTimeout(() => {
+                actionItem.classList.remove('new');
+            }, 500);
+        }
+
+        function addLogEntry(type, message) {
+            const logContainer = document.getElementById('actionLog');
+
+            const actionItem = document.createElement('div');
+            actionItem.className = 'action-item';
+
+            const time = new Date().toLocaleTimeString();
+
+            actionItem.innerHTML = `
+                <div class="action-header">
+                    <span class="action-type">${type}</span>
+                    <span class="action-time">${time}</span>
+                </div>
+                <div class="action-details">${message}</div>
+            `;
+
+            logContainer.insertBefore(actionItem, logContainer.firstChild);
+        }
+
+        function getActionTypeText(type) {
+            const typeMap = {
+                'click': '点击',
+                'tap': '点击',
+                'scroll': '滑动',
+                'swipe': '滑动',
+                'input': '输入',
+                'text': '输入',
+                'back': '返回',
+                'home': '主页'
+            };
+            return typeMap[type] || type;
+        }
+
+        function updateStats() {
+            document.getElementById('totalActions').textContent = stats.total;
+            document.getElementById('clickCount').textContent = stats.click;
+            document.getElementById('scrollCount').textContent = stats.scroll;
+            document.getElementById('inputCount').textContent = stats.input;
+        }
+
+        function updateStatus(status) {
+            const badge = document.getElementById('screenStatus');
+            if (status === 'active') {
+                badge.className = 'status-badge status-active';
+                badge.textContent = '实时更新';
+            } else {
+                badge.className = 'status-badge status-waiting';
+                badge.textContent = '等待中';
+            }
+        }
+
+        function clearLog() {
+            document.getElementById('actionLog').innerHTML = '';
+            stats = { total: 0, click: 0, scroll: 0, input: 0 };
+            updateStats();
+            actionHistory = [];
+            addLogEntry('系统', '日志已清空');
+        }
+
+        function exportLog() {
+            const data = {
+                timestamp: new Date().toISOString(),
+                stats: stats,
+                actions: actionHistory
+            };
+
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `ai_interaction_log_${Date.now()}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // 检查证书状态
+        function checkCertStatus() {
+            fetch('/api/cert/status')
+                .then(response => response.json())
+                .then(data => {
+                    const certStatusElement = document.getElementById('certStatus');
+                    const certStatusCard = document.getElementById('certStatusCard');
+
+                    if (!data.device_connected) {
+                        certStatusElement.innerHTML = '<span style="font-size: 0.6em;">设备未连接</span>';
+                        certStatusCard.style.background = '#ffebee';
+                        certStatusElement.style.color = '#c62828';
+                    } else if (data.installed) {
+                        const certType = data.user_cert_installed ? '用户证书' : '系统证书';
+                        certStatusElement.innerHTML = '✓';
+                        certStatusCard.style.background = '#e8f5e9';
+                        certStatusElement.style.color = '#2e7d32';
+                        certStatusCard.title = `HTTPS证书已安装 (${certType})`;
+                    } else {
+                        certStatusElement.innerHTML = '✗';
+                        certStatusCard.style.background = '#fff3e0';
+                        certStatusElement.style.color = '#ef6c00';
+                        certStatusCard.title = 'HTTPS证书未安装';
+                    }
+                })
+                .catch(error => {
+                    console.error('Failed to check cert status:', error);
+                    const certStatusElement = document.getElementById('certStatus');
+                    certStatusElement.innerHTML = '<span style="font-size: 0.6em;">检查失败</span>';
+                });
+        }
+
+        // 页面加载时自动连接
+        window.onload = function() {
+            connectWebSocket();
+            checkCertStatus(); // 首次检查
+            setInterval(checkCertStatus, 10000); // 每10秒检查一次
+        };
+
+        // 页面卸载时断开连接
+        window.onbeforeunload = function() {
+            if (ws) {
+                ws.close();
+            }
+        };
+    </script>
+</body>
+</html>
