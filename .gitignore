@@ -5,10 +5,10 @@ bin/
 *.dll
 *.so
 *.dylib
-apk-analysis-server
-server
-server_*
-brand_new_server
+/apk-analysis-server
+/server
+/server_*
+/brand_new_server
 
 # Test coverage
 *.out

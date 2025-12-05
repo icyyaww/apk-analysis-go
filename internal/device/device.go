@@ -292,15 +292,35 @@ func (m *DeviceManager) AcquireDeviceForAPK(ctx context.Context, taskID string, 
 
 		case <-timeoutCh:
 			// 只有在设置了超时时才会触发
-			if apkArch == ArchARM {
+			// 根据设备池状态返回不同的错误类型
+			exists, allBusy, _ := m.GetDeviceStatusForArch(apkArch)
+
+			if !exists {
+				// 系统中不存在该架构的设备
+				if apkArch == ArchARM {
+					return nil, NewDeviceAcquireError(
+						domain.FailureTypeARMDeviceOnly,
+						fmt.Sprintf("no ARM device configured (APK requires ARM architecture)"),
+					)
+				}
 				return nil, NewDeviceAcquireError(
-					domain.FailureTypeARMDeviceOnly,
-					fmt.Sprintf("timeout waiting for ARM device (APK requires ARM architecture)"),
+					domain.FailureTypeDeviceTimeout,
+					fmt.Sprintf("no %s device configured", apkArch),
 				)
 			}
+
+			if allBusy {
+				// 设备存在但都被占用
+				return nil, NewDeviceAcquireError(
+					domain.FailureTypeDeviceTimeout,
+					fmt.Sprintf("timeout waiting for %s device (all devices busy)", apkArch),
+				)
+			}
+
+			// 设备存在但可能离线或健康检查失败
 			return nil, NewDeviceAcquireError(
-				domain.FailureTypeDeviceTimeout,
-				fmt.Sprintf("timeout waiting for %s device", apkArch),
+				domain.FailureTypeConnectionError,
+				fmt.Sprintf("timeout waiting for %s device (devices may be offline or unhealthy)", apkArch),
 			)
 
 		case <-ticker.C:
@@ -421,6 +441,46 @@ func (m *DeviceManager) GetAvailableDeviceCount() int {
 		}
 	}
 	return available
+}
+
+// HasDeviceWithArch 检查是否存在指定架构的设备
+func (m *DeviceManager) HasDeviceWithArch(arch DeviceArch) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, device := range m.devices {
+		if arch == ArchAny || device.Arch == arch {
+			return true
+		}
+	}
+	return false
+}
+
+// GetDeviceStatusForArch 获取指定架构设备的状态
+// 返回: exists(是否存在), allBusy(是否全忙), allOffline(是否全离线)
+func (m *DeviceManager) GetDeviceStatusForArch(arch DeviceArch) (exists bool, allBusy bool, allOffline bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	matchingDevices := 0
+	busyCount := 0
+
+	for _, device := range m.devices {
+		if arch == ArchAny || device.Arch == arch {
+			matchingDevices++
+			if device.inUse {
+				busyCount++
+			}
+			if device.isResting {
+				busyCount++ // 休息中也算忙
+			}
+		}
+	}
+
+	exists = matchingDevices > 0
+	allBusy = exists && busyCount >= matchingDevices
+	allOffline = false // 离线状态在健康检查中判断，这里简化处理
+	return
 }
 
 // GetDeviceStats 获取设备池统计信息
