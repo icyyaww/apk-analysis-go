@@ -78,21 +78,39 @@ func main() {
 		logger.WithError(err).Warn("Failed to cleanup stuck tasks")
 	}
 
-	// 5. 初始化设备管理器 (Device Manager) - 单设备测试模式
+	// 5. 初始化设备管理器 (Device Manager) - 双设备模式
 	deviceMgr := device.NewDeviceManager(logger)
 
-	// 仅启用 OnePlus 5T（WiFi连接，Magisk root + 系统证书，ARM 架构）
+	// Device 1: OnePlus 5T (Android 10, Magisk root, 系统证书已安装)
+	// ADB 端口固定为 5555 (标准 tcpip 模式)
 	device1 := &device.Device{
 		ID:                 "oneplus-5t",
-		ADBTarget:          "192.168.2.100:5555",             // WiFi ADB地址（静态IP）
-		ProxyHost:          "192.168.2.188",                  // 宿主机局域网IP
+		ADBTarget:          "192.168.2.100:5555",              // WiFi ADB地址（固定端口）
+		ProxyHost:          "192.168.2.33",                    // 宿主机IP（与真机同网段）
 		ProxyPort:          8082,                              // mitmproxy-1 代理端口
-		MitmproxyContainer: "apk-analysis-mitmproxy-1",       // Mitmproxy容器名称
+		MitmproxyContainer: "apk-analysis-mitmproxy-1",        // Mitmproxy容器名称
 		MitmproxyAPIPort:   8083,                              // mitmproxy-1 API端口
+		FridaHost:          "192.168.2.100:27042",             // Frida WiFi连接地址
 		Arch:               device.ArchARM,                    // ARM 架构真机
 	}
 	deviceMgr.AddDevice(device1)
-	logger.Info("BUILD_VERSION_20251121_SINGLE_DEVICE_TEST") // 编译版本标记
+
+	// Device 2: Redmi Note 11 Pro 5G (Android 13, Magisk root)
+	// 注意：MIUI 无线调试端口每次重启会变化，需要手动更新
+	// 重要：使用独立的 mitmproxy-2 避免并发任务流量混合
+	device2 := &device.Device{
+		ID:                 "redmi-note11pro",
+		ADBTarget:          "192.168.2.34:46329",              // WiFi ADB地址（MIUI无线调试端口，需手动更新）
+		ProxyHost:          "192.168.2.33",                    // 宿主机IP（与真机同网段）
+		ProxyPort:          8084,                              // mitmproxy-2 代理端口（独立代理，避免流量混合）
+		MitmproxyContainer: "apk-analysis-mitmproxy-2",        // Mitmproxy容器名称
+		MitmproxyAPIPort:   8083,                              // mitmproxy-2 API端口（容器内部端口，不是宿主机映射端口）
+		FridaHost:          "192.168.2.34:27042",              // Frida WiFi连接地址
+		Arch:               device.ArchARM,                    // ARM 架构真机
+	}
+	deviceMgr.AddDevice(device2)
+
+	logger.Info("BUILD_VERSION_20251208_DUAL_DEVICE_FRIDA_WIFI") // 编译版本标记
 
 	// 配置设备休息参数（每执行10个任务，休息30秒）
 	deviceMgr.ConfigureDeviceRest(10, 30*time.Second)
@@ -100,13 +118,14 @@ func main() {
 	logger.WithFields(logrus.Fields{
 		"device_count": deviceMgr.GetDeviceCount(),
 		"devices": []map[string]interface{}{
-			{"id": device1.ID, "adb": device1.ADBTarget, "proxy_port": device1.ProxyPort, "mitmproxy": device1.MitmproxyContainer, "api_port": device1.MitmproxyAPIPort},
+			{"id": device1.ID, "adb": device1.ADBTarget, "frida_host": device1.FridaHost, "proxy_port": device1.ProxyPort},
+			{"id": device2.ID, "adb": device2.ADBTarget, "frida_host": device2.FridaHost, "proxy_port": device2.ProxyPort},
 		},
-	}).Info("Device manager initialized with 1 device (OnePlus 5T only - test mode)")
+	}).Info("Device manager initialized with 2 devices (OnePlus 5T + Redmi Note 11 Pro)")
 
 	// 5.5 为所有设备初始化 mitmproxy 证书（带重试机制）
 	logger.Info("Initializing mitmproxy certificates for all devices...")
-	devices := []*device.Device{device1}
+	devices := []*device.Device{device1, device2}
 
 	// 启动异步证书安装任务（避免阻塞服务启动）
 	go func() {
@@ -159,6 +178,7 @@ func main() {
 	logger.Info("Certificate initialization started in background (will retry if needed)")
 
 	// 6. 初始化 RabbitMQ
+	// 使用 NewRabbitMQWithPrefetch，prefetch count = worker concurrency，以支持并行消费
 	mqConfig := &queue.RabbitMQConfig{
 		Host:     cfg.RabbitMQ.Host,
 		Port:     cfg.RabbitMQ.Port,
@@ -166,12 +186,16 @@ func main() {
 		Password: cfg.RabbitMQ.Password,
 		VHost:    cfg.RabbitMQ.VHost,
 	}
-	mq, err := queue.NewRabbitMQ(mqConfig, cfg.RabbitMQ.Queue, logger)
+	workerCount := cfg.Worker.Concurrency
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	mq, err := queue.NewRabbitMQWithPrefetch(mqConfig, cfg.RabbitMQ.Queue, workerCount, logger)
 	if err != nil {
 		logger.Fatalf("Failed to init RabbitMQ: %v", err)
 	}
 	defer mq.Close()
-	logger.Info("RabbitMQ connected successfully")
+	logger.WithField("prefetch_count", workerCount).Info("RabbitMQ connected successfully")
 
 	// 6. 初始化 Services
 	taskRepo := repository.NewTaskRepository(db, logger)
@@ -276,7 +300,7 @@ func main() {
 
 	// 10.1 启动 ADB 连接健康检查（每30秒检查一次，自动重连）
 	adbTargets := []string{
-		device1.ADBTarget, // 192.168.2.38:5555 (OnePlus 5T WiFi)
+		device1.ADBTarget, // 192.168.2.34:46791 (Redmi Note 11 Pro WiFi)
 	}
 	connMgr := adb.GetConnectionManager(logger)
 	go connMgr.StartHealthCheck(context.Background(), 30*time.Second, adbTargets)

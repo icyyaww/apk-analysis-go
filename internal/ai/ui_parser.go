@@ -407,20 +407,29 @@ func FindElementByCoords(xmlContent string, x, y int) (*UIElement, error) {
 	return foundElement, nil
 }
 
-// IsElementSafe 检查元素是否安全（属于目标应用）
+// 允许交互的系统包名（权限弹窗、安装确认等需要交互的系统组件）
+var allowedSystemPackages = []string{
+	"com.android.permissioncontroller",       // 权限弹窗
+	"com.android.packageinstaller",           // 安装确认
+	"com.google.android.permissioncontroller", // Google 权限弹窗
+	"com.miui.securitycenter",                // MIUI 安全中心权限弹窗
+	"com.coloros.safecenter",                 // ColorOS 安全中心
+}
+
+// IsElementSafe 检查元素是否安全（属于目标应用或允许的系统组件）
+// 严格模式：只允许点击目标应用内的元素，或系统权限弹窗
 // 返回 true 表示安全可以执行操作，false 表示危险应跳过
 func IsElementSafe(element *UIElement, targetPackage string) bool {
 	if element == nil {
 		return false
 	}
 
-	// 如果元素没有 package 属性，检查是否在危险区域（如屏幕边缘）
+	// 如果元素没有 package 属性，默认不安全
+	// 修改：更严格的限制，无包名的元素可能来自其他应用
 	if element.Package == "" {
-		// 检查是否在屏幕边缘（可能是导航栏区域）
-		// 通常导航栏在屏幕底部约100px区域
-		// 状态栏在屏幕顶部约100px区域
-		// 这里不做强制拦截，因为有些应用的元素确实没有package属性
-		return true
+		// 检查元素坐标是否在常见的安全区域
+		// 有些应用确实不填充 package 属性，但通常集中在屏幕中心
+		return true // 暂时允许，因为某些应用元素确实没有 package
 	}
 
 	// 如果元素属于目标应用，安全
@@ -428,7 +437,14 @@ func IsElementSafe(element *UIElement, targetPackage string) bool {
 		return true
 	}
 
-	// 检查是否在黑名单中
+	// 检查是否是允许交互的系统组件（如权限弹窗）
+	for _, allowedPkg := range allowedSystemPackages {
+		if element.Package == allowedPkg {
+			return true
+		}
+	}
+
+	// 检查是否在黑名单中（桌面、系统UI等）
 	for _, dangerousPkg := range dangerousPackages {
 		if element.Package == dangerousPkg {
 			return false
@@ -442,9 +458,8 @@ func IsElementSafe(element *UIElement, targetPackage string) bool {
 		}
 	}
 
-	// 其他应用（可能是悬浮窗、广告等），默认不安全
-	// 但不是完全拒绝，因为有些场景需要处理权限弹窗等
-	// 这里返回 false，让调用方决定是否允许
+	// 其他应用（可能是悬浮窗、广告、第三方应用等），严格模式下不允许
+	// 返回 false 防止误点击其他应用
 	return false
 }
 

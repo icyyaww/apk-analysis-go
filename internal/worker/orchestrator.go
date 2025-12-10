@@ -110,13 +110,16 @@ func NewOrchestrator(
 	// AI智能交互初始化
 	aiInteractionEnabled := os.Getenv("AI_INTERACTION_ENABLED") == "true"
 	var interactionEngine *ai.InteractionEngine
-	var smartClicker *ai.SmartClicker
+
+	// SmartClicker 始终初始化（不依赖AI，使用UI Automator解析XML）
+	// 用于深度探索模式下的智能点击（隐私协议、权限弹窗等）
+	smartClicker := ai.NewSmartClicker(logger)
+	logger.Info("✅ SmartClicker initialized (UI Automator based)")
 
 	if aiInteractionEnabled {
 		if glmAPIKey != "" {
 			interactionEngine = ai.NewInteractionEngine(glmAPIKey, logger)
-			smartClicker = ai.NewSmartClicker(logger)
-			logger.Info("✅ AI smart interaction enabled")
+			logger.Info("✅ AI smart interaction enabled (GLM-4V)")
 		} else {
 			logger.Warn("⚠️ AI_INTERACTION_ENABLED=true but GLM_API_KEY not set, disabling AI interaction")
 			aiInteractionEnabled = false
@@ -187,7 +190,7 @@ func (o *Orchestrator) ExecuteTask(ctx context.Context, taskID, apkPath string) 
 	adbClient := dev.CreateADBClient(o.logger)
 	proxyHost, proxyPort := dev.GetProxyAddress()
 	certInstaller := cert.NewInstaller(dev.ADBTarget, o.logger)
-	fridaClient := frida.NewClient(dev.ADBTarget, o.logger)
+	fridaClient := frida.NewClientWithHost(dev.ADBTarget, dev.FridaHost, o.logger)
 
 	o.logger.WithFields(logrus.Fields{
 		"task_id":           taskID,
@@ -289,14 +292,9 @@ func (o *Orchestrator) ExecuteTask(ctx context.Context, taskID, apkPath string) 
 		}
 	}
 
-	// 3. 设置代理
-	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "配置网络代理", 30); err != nil {
-		return err
-	}
-
-	if err := adbClient.SetProxy(ctx, proxyHost, proxyPort); err != nil {
-		o.logger.WithError(err).Warn("Failed to set proxy, continuing anyway")
-	}
+	// 3. 跳过代理设置（假设设备已在 WiFi 设置中配置好代理）
+	// WiFi 代理比 settings put global http_proxy 更可靠，能捕获所有 APP 流量
+	o.logger.Info("Skipping proxy setup - assuming device WiFi proxy is pre-configured")
 
 	// 4. 提取 Activity 列表
 	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "提取 Activity 列表", 35); err != nil {
@@ -675,8 +673,38 @@ func (o *Orchestrator) executeActivity(
 	}
 
 	// 等待Activity加载和网络请求
-	// 增加等待时间以捕获更多网络流量
-	time.Sleep(5 * time.Second)
+	time.Sleep(3 * time.Second)
+
+	// 1.5 检测是否成功进入目标应用（前台检测）
+	currentPkg, err := adbClient.GetForegroundPackage(ctx)
+	if err != nil {
+		o.logger.WithError(err).WithField("activity", o.shortActivityName(activity)).Warn("⚠️ 无法检测前台应用")
+		// 检测失败不阻塞，继续执行
+	} else if currentPkg != packageName {
+		o.logger.WithFields(logrus.Fields{
+			"activity":        o.shortActivityName(activity),
+			"target_package":  packageName,
+			"current_package": currentPkg,
+		}).Warn("⚠️ Activity启动失败，当前不在目标应用内")
+
+		detail["status"] = "launch_failed"
+		detail["error"] = fmt.Sprintf("Activity启动失败，当前前台应用: %s", currentPkg)
+		detail["current_foreground"] = currentPkg
+
+		// 尝试恢复：重新拉起应用主界面
+		o.logger.Info("🔄 尝试恢复：重新拉起应用主界面")
+		_, _ = adbClient.Shell(ctx, fmt.Sprintf("monkey -p %s -c android.intent.category.LAUNCHER 1", packageName))
+		time.Sleep(2 * time.Second)
+
+		// 返回，跳过该 Activity 的后续操作
+		endTime := time.Now()
+		detail["end_time"] = endTime.Format(time.RFC3339)
+		detail["execution_time"] = endTime.Sub(startTime).Seconds()
+		return detail
+	}
+
+	// 额外等待以捕获更多网络流量
+	time.Sleep(2 * time.Second)
 
 	// 2. 截图 (所有 Activity)
 	var screenshotPath string
@@ -1049,10 +1077,8 @@ func (o *Orchestrator) cleanup(ctx context.Context, packageName string, adbClien
 		}
 	}
 
-	// 清除代理
-	if err := adbClient.ClearProxy(ctx); err != nil {
-		o.logger.WithError(err).Warn("Failed to clear proxy")
-	}
+	// 跳过清除代理（WiFi 代理由用户手动管理）
+	// o.logger.Info("Skipping proxy cleanup - WiFi proxy is managed manually")
 
 	// 卸载应用
 	if err := adbClient.Uninstall(ctx, packageName); err != nil {
@@ -1196,52 +1222,82 @@ func (o *Orchestrator) appendFlowsToFile(filePath string, flows []*flow.FlowReco
 }
 
 // performDeepExploration 对核心 Activity 执行深度探索
+// 使用智能点击识别UI元素，按优先级点击按钮
+// 优化：循环检测页面变化，持续点击高优先级按钮直到无按钮可点
 func (o *Orchestrator) performDeepExploration(ctx context.Context, activity string, adbClient *adb.Client) {
-	o.logger.WithField("activity", activity).Info("Starting deep exploration")
+	o.logger.WithField("activity", activity).Info("Starting deep exploration with smart click")
 
 	// 等待加载
 	time.Sleep(2 * time.Second)
 
-	// 1. 多次上下滑动 (探索列表内容)
-	for i := 0; i < 3; i++ {
+	if o.smartClicker == nil {
+		o.logger.Warn("SmartClicker not initialized, skipping deep exploration")
+		return
+	}
+
+	// 高优先级按钮列表（按优先级从高到低排序）
+	// 游客、试用等跳过登录的按钮优先级最高
+	highPriorityButtons := []string{
+		// 游客/试用/跳过登录（最高优先级 - 快速进入应用）
+		"游客登录", "游客模式", "游客", "试用", "体验", "随便看看",
+		"跳过", "跳过登录", "稍后", "稍后再说", "暂不登录", "先逛逛", "以后再说",
+		// 个人账号登录（教育类应用常见 - 优先于老师/机构账号）
+		"个人账号", "个人账号注册", "个人账号登录", "个人注册",
+		// 年龄确认/监护人同意（儿童应用常见）
+		"已满14周岁", "已满16周岁", "已满18周岁", "已满14岁", "已满16岁", "已满18岁", "我已成年", "我已满",
+		"监护人同意", "家长同意", "家长已阅读", "监护人已阅读",
+		// 隐私协议/权限相关（次高优先级）
+		"同意并继续", "同意并进入", "我同意", "同意",
+		"允许", "确定", "确认", "接受", "授权", "继续",
+		// 知道了/关闭弹窗
+		"我知道了", "知道了", "好的", "好", "关闭", "OK",
+		// 开始使用
+		"开始体验", "立即体验", "开始使用", "进入",
+	}
+
+	// 循环点击：点击 -> 等待1秒 -> 检查页面变化 -> 继续点击
+	maxRounds := 5 // 最多5轮点击，防止死循环
+	for round := 0; round < maxRounds; round++ {
+		o.logger.WithField("round", round+1).Info("🔍 Attempting to click high priority buttons")
+
+		// 尝试点击高优先级按钮
+		clicked, err := o.smartClicker.ClickButtonByText(ctx, adbClient, highPriorityButtons, 1)
+		if err != nil {
+			o.logger.WithError(err).Debug("Smart click failed")
+			break
+		}
+
+		if !clicked {
+			o.logger.Info("No more high priority buttons found")
+			break
+		}
+
+		o.logger.Info("✅ Clicked high priority button, waiting for page change...")
+
+		// 等待1秒，让页面有时间响应
+		time.Sleep(1 * time.Second)
+
+		// 页面可能已变化，继续下一轮检测
+		// 下一轮会重新获取UI并查找按钮
+	}
+
+	// 滑动探索列表内容
+	o.logger.Info("📜 Scrolling to explore content")
+	for i := 0; i < 2; i++ {
 		// 向下滑动
 		adbClient.Shell(ctx, "input swipe 500 1500 500 500 300")
-		time.Sleep(2 * time.Second)
+		time.Sleep(1500 * time.Millisecond)
 
 		// 向上滑动
 		adbClient.Shell(ctx, "input swipe 500 500 500 1500 300")
-		time.Sleep(2 * time.Second)
+		time.Sleep(1500 * time.Millisecond)
 	}
 
-	// 2. 点击多个位置 (模拟点击按钮、链接)
-	clickPoints := []struct{ x, y int }{
-		{270, 500},  // 左上
-		{810, 500},  // 右上
-		{540, 960},  // 中心
-		{270, 1420}, // 左下
-		{810, 1420}, // 右下
-	}
-
-	for _, point := range clickPoints {
-		adbClient.TapScreen(ctx, point.x, point.y)
-		time.Sleep(3 * time.Second) // 等待页面加载和网络请求
-
-		// 如果打开了新页面，返回
-		adbClient.PressBack(ctx)
-		time.Sleep(1 * time.Second)
-	}
-
-	// 3. 尝试输入操作 (如果有输入框)
-	adbClient.TapScreen(ctx, 540, 400) // 点击顶部区域 (可能是搜索框)
-	time.Sleep(1 * time.Second)
-	adbClient.InputText(ctx, "test") // 输入测试文本
-	time.Sleep(2 * time.Second)
-
-	// 4. 左右滑动 (如果是轮播图或多标签页)
+	// 左右滑动 (轮播图或多标签页)
 	adbClient.Shell(ctx, "input swipe 800 960 200 960 300") // 左滑
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 	adbClient.Shell(ctx, "input swipe 200 960 800 960 300") // 右滑
-	time.Sleep(2 * time.Second)
+	time.Sleep(1 * time.Second)
 
 	o.logger.WithField("activity", activity).Info("Deep exploration completed")
 }

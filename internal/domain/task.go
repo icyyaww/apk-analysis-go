@@ -161,10 +161,10 @@ type TaskDomainAnalysis struct {
 	ID                 uint       `gorm:"primaryKey;autoIncrement" json:"id"`
 	TaskID             string     `gorm:"type:varchar(36);uniqueIndex:uk_task_id;not null" json:"task_id"`
 	PrimaryDomain      string     `gorm:"type:varchar(255)" json:"primary_domain,omitempty"`
-	PrimaryDomainJSON  string     `gorm:"type:text" json:"primary_domain_json,omitempty"`
+	PrimaryDomainJSON  string     `gorm:"type:longtext" json:"primary_domain_json,omitempty"`
 	DomainBeianStatus  string     `gorm:"type:varchar(50)" json:"domain_beian_status,omitempty"`
-	DomainBeianJSON    string     `gorm:"type:text" json:"domain_beian_json,omitempty"`
-	AppDomainsJSON     string     `gorm:"type:mediumtext" json:"app_domains_json,omitempty"`
+	DomainBeianJSON    string     `gorm:"type:longtext" json:"domain_beian_json,omitempty"`
+	AppDomainsJSON     string     `gorm:"type:longtext" json:"app_domains_json,omitempty"`
 	URLAnalysisStatic  string     `gorm:"type:mediumtext" json:"url_analysis_static,omitempty"`
 	URLAnalysisDynamic string     `gorm:"type:mediumtext" json:"url_analysis_dynamic,omitempty"`
 	AnalyzedAt         *time.Time `json:"analyzed_at,omitempty"`

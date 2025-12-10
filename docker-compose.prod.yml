@@ -14,6 +14,7 @@ services:
       dockerfile: Dockerfile
     image: apk-analysis-go:latest
     container_name: apk-analysis-server
+    privileged: true
     ports:
       - "8080:8080"
     environment:
@@ -42,6 +43,7 @@ services:
     networks:
       - apk-network
     volumes:
+      - /dev/bus/usb:/dev/bus/usb
       - ./inbound_apks:/app/inbound_apks
       - ./results:/app/results
       - ./logs:/app/logs

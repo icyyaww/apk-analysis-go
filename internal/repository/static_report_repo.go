@@ -48,6 +48,7 @@ func (r *staticReportRepo) Upsert(ctx context.Context, report *domain.TaskStatic
 				"package_name", "version_name", "version_code", "app_name",
 				"file_size", "md5", "sha256",
 				"activity_count", "service_count", "receiver_count", "provider_count", "permission_count",
+				"url_count", "domain_count", // 🔧 修复：添加 URL 和域名计数字段
 				"basic_info_json", "deep_analysis_json",
 				"analysis_duration_ms", "fast_analysis_duration_ms", "deep_analysis_duration_ms",
 				"needs_deep_analysis_reason", "analyzed_at",

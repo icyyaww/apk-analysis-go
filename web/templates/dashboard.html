@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>APK Analysis Dashboard</title>
+    <!-- SheetJS for Excel export -->
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -1057,6 +1059,7 @@
                 </select>
 
                 <button class="action-btn" onclick="exportTasks()">📥 导出</button>
+                <button class="action-btn" onclick="exportUnrecordedDomains()" style="background: #F59E0B; color: white;">⚠️ 导出未备案</button>
                 <button class="btn-primary" onclick="showQueueModal()">
                     <span>⏳</span>
                     <span>队列管理</span>
@@ -2057,8 +2060,8 @@
             }
 
             // 检查文件数量限制
-            if (files.length > 20) {
-                alert('最多同时上传 20 个文件');
+            if (files.length > 100) {
+                alert('最多同时上传 100 个文件');
                 return;
             }
 
@@ -2236,6 +2239,120 @@
             a.href = url;
             a.download = filename;
             a.click();
+        }
+
+        // 导出未备案域名
+        async function exportUnrecordedDomains() {
+            try {
+                // 获取所有未备案的任务
+                const response = await fetch('/api/tasks?limit=1000&beian_status=未备案');
+                const data = await response.json();
+
+                if (!data.tasks || data.tasks.length === 0) {
+                    alert('没有找到未备案的任务');
+                    return;
+                }
+
+                // 构建导出数据
+                const rows = [];
+                const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
+
+                for (const task of data.tasks) {
+                    // 解析备案信息，确认是未备案
+                    let isUnrecorded = false;
+                    let companyName = '';
+
+                    if (task.domain_beian_status) {
+                        try {
+                            const beianData = JSON.parse(task.domain_beian_status);
+                            if (Array.isArray(beianData) && beianData.length > 0) {
+                                const result = beianData[0];
+                                if (result.status === 'error' || result.status === 'unrecorded') {
+                                    isUnrecorded = true;
+                                }
+                                companyName = result.company_name || '';
+                            }
+                        } catch (e) {
+                            isUnrecorded = true;
+                        }
+                    } else {
+                        isUnrecorded = true;
+                    }
+
+                    if (!isUnrecorded) continue;
+
+                    // 获取应用名称
+                    const appName = task.static_report?.app_name || task.apk_name?.replace('.apk', '') || '';
+                    const packageName = task.package_name || '';
+
+                    // 处理域名列表
+                    if (task.app_domains && task.app_domains.length > 0) {
+                        let isFirstDomain = true;
+                        for (const domainInfo of task.app_domains) {
+                            rows.push([
+                                isFirstDomain ? appName : '',
+                                isFirstDomain ? packageName : '',
+                                domainInfo.domain || '',
+                                domainInfo.ip || '',
+                                domainInfo.province || '',
+                                domainInfo.isp || '',
+                                '未备案',
+                                today
+                            ]);
+                            isFirstDomain = false;
+                        }
+                    } else {
+                        // 没有域名信息的情况
+                        rows.push([
+                            appName,
+                            packageName,
+                            '',
+                            '',
+                            '',
+                            '',
+                            '未备案',
+                            today
+                        ]);
+                    }
+                }
+
+                if (rows.length === 0) {
+                    alert('没有找到未备案的域名数据');
+                    return;
+                }
+
+                // 生成 Excel 文件 (使用 SheetJS)
+                const headers = ['APP名称', '包名', '接入域名', '接入IP', '归属地', '运营商', '备案状态', '发现时间'];
+
+                // 创建工作簿和工作表
+                const wb = XLSX.utils.book_new();
+                const wsData = [headers, ...rows];
+                const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+                // 设置列宽
+                ws['!cols'] = [
+                    { wch: 25 },  // APP名称
+                    { wch: 35 },  // 包名
+                    { wch: 30 },  // 接入域名
+                    { wch: 18 },  // 接入IP
+                    { wch: 15 },  // 归属地
+                    { wch: 12 },  // 运营商
+                    { wch: 10 },  // 备案状态
+                    { wch: 15 }   // 发现时间
+                ];
+
+                // 添加工作表到工作簿
+                XLSX.utils.book_append_sheet(wb, ws, '未备案域名');
+
+                // 导出文件
+                const filename = `未备案域名_${new Date().toISOString().slice(0,10)}.xlsx`;
+                XLSX.writeFile(wb, filename);
+
+                alert(`成功导出 ${rows.length} 条未备案域名记录`);
+            } catch (error) {
+                console.error('导出失败:', error);
+                alert('导出失败: ' + error.message);
+            }
         }
 
         // Dashboard相关函数
@@ -2796,7 +2913,7 @@
             <div style="padding: 24px; overflow-y: auto; max-height: calc(85vh - 180px);">
                 <div style="margin-bottom: 20px;">
                     <label for="apk-file-input" style="display: block; margin-bottom: 10px; font-weight: 500;">
-                        选择 APK 文件 (支持批量选择，每个文件最大 500MB，最多 20 个)
+                        选择 APK 文件 (支持批量选择，每个文件最大 500MB，最多 100 个)
                     </label>
                     <input type="file" id="apk-file-input" accept=".apk" multiple
                            onchange="updateFileList()"
@@ -2838,7 +2955,7 @@
                         <strong>提示:</strong><br>
                         • 只支持 .apk 格式文件<br>
                         • 每个文件大小不超过 500MB<br>
-                        • 最多同时上传 20 个文件<br>
+                        • 最多同时上传 100 个文件<br>
                         • 按住 Ctrl (Windows) 或 Cmd (Mac) 可多选文件<br>
                         • 上传后系统将自动开始分析
                     </p>

@@ -45,6 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     python3 \
     python3-pip \
+    sshpass \
+    openssh-client \
+    dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 Androguard 4.x (深度 DEX 分析，提取代码中硬编码的 URL)

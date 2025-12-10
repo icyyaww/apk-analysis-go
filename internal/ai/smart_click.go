@@ -13,7 +13,8 @@ import (
 
 // SmartClicker 智能点击器
 type SmartClicker struct {
-	logger *logrus.Logger
+	logger        *logrus.Logger
+	targetPackage string // 目标应用包名，用于安全检查
 }
 
 // NewSmartClicker 创建智能点击器
@@ -21,6 +22,20 @@ func NewSmartClicker(logger *logrus.Logger) *SmartClicker {
 	return &SmartClicker{
 		logger: logger,
 	}
+}
+
+// NewSmartClickerWithPackage 创建带包名验证的智能点击器
+// targetPackage: 目标应用包名，点击操作只允许在该应用内执行
+func NewSmartClickerWithPackage(logger *logrus.Logger, targetPackage string) *SmartClicker {
+	return &SmartClicker{
+		logger:        logger,
+		targetPackage: targetPackage,
+	}
+}
+
+// SetTargetPackage 设置目标应用包名
+func (s *SmartClicker) SetTargetPackage(packageName string) {
+	s.targetPackage = packageName
 }
 
 // ClickButtonByText 使用UI Automator通过文本查找并点击按钮
@@ -87,34 +102,112 @@ func (s *SmartClicker) ClickButtonByText(ctx context.Context, executor ActionExe
 }
 
 // findAndClickButton 查找并点击按钮
+// 增强版：支持包名验证，确保只点击目标应用内的元素
+// 按优先级查找策略：
+// 1. 外层循环：按 buttonTexts 列表顺序（优先级从高到低）
+// 2. 内层循环：遍历 UI 元素查找匹配
+// 3. 两轮查找：第一轮只找 clickable="true"，第二轮放宽条件
 func (s *SmartClicker) findAndClickButton(ctx context.Context, executor ActionExecutor, xmlContent string, buttonTexts []string) (bool, error) {
-	// 使用正则表达式提取节点信息
-	// 简化版：查找text和bounds属性
-	nodePattern := regexp.MustCompile(`<node[^>]*text="([^"]*)"[^>]*clickable="true"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>`)
-	matches := nodePattern.FindAllStringSubmatch(xmlContent, -1)
+	// 使用正则表达式提取节点信息（包含 package 属性）
+	nodePattern := regexp.MustCompile(`<node[^>]*>`)
+	nodeMatches := nodePattern.FindAllString(xmlContent, -1)
 
-	for _, match := range matches {
-		if len(match) < 6 {
-			continue
+	// 负面排除列表 - 绝对不能点击的按钮
+	negativeTexts := []string{"不同意", "拒绝", "不允许", "取消", "退出", "否", "No", "Disagree", "Reject", "Cancel"}
+
+	// 两轮查找：第一轮只找 clickable="true"，第二轮放宽条件（用于 TextView 等可点击但 clickable=false 的元素）
+	for round := 1; round <= 2; round++ {
+		requireClickable := (round == 1)
+		if round == 2 {
+			s.logger.Debug("Round 2: trying non-clickable elements")
 		}
 
-		text := match[1]
-		x1, _ := strconv.Atoi(match[2])
-		y1, _ := strconv.Atoi(match[3])
-		x2, _ := strconv.Atoi(match[4])
-		y2, _ := strconv.Atoi(match[5])
-
-		// 检查文本是否匹配
+		// 按 buttonTexts 的优先级顺序查找（外层循环）
+		// 这样确保优先级高的按钮（如"游客模式"）先被点击
 		for _, btnText := range buttonTexts {
-			if strings.Contains(text, btnText) {
-				// 计算中心点
+			// 遍历所有 UI 元素查找匹配（内层循环）
+			for _, nodeStr := range nodeMatches {
+				// 第一轮：检查是否可点击
+				if requireClickable && !strings.Contains(nodeStr, `clickable="true"`) {
+					continue
+				}
+
+				// 提取 text 属性
+				textMatch := regexp.MustCompile(`text="([^"]*)"`).FindStringSubmatch(nodeStr)
+				if len(textMatch) < 2 {
+					continue
+				}
+				text := textMatch[1]
+
+				// 检查文本是否匹配目标按钮
+				if len(text) > 50 {
+					continue
+				}
+
+				// 负面排除检查
+				isNegative := false
+				for _, neg := range negativeTexts {
+					if strings.Contains(text, neg) {
+						isNegative = true
+						break
+					}
+				}
+				if isNegative {
+					continue
+				}
+
+				// 精确匹配当前优先级的按钮文本
+				matched := false
+				if text == btnText ||
+					strings.HasPrefix(text, btnText) ||
+					strings.HasSuffix(text, btnText) ||
+					(len(text) <= 20 && strings.Contains(text, btnText)) {
+					matched = true
+				}
+				if !matched {
+					continue
+				}
+
+				// 提取 bounds 属性
+				boundsMatch := regexp.MustCompile(`bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"`).FindStringSubmatch(nodeStr)
+				if len(boundsMatch) < 5 {
+					continue
+				}
+				x1, _ := strconv.Atoi(boundsMatch[1])
+				y1, _ := strconv.Atoi(boundsMatch[2])
+				x2, _ := strconv.Atoi(boundsMatch[3])
+				y2, _ := strconv.Atoi(boundsMatch[4])
 				centerX := (x1 + x2) / 2
 				centerY := (y1 + y2) / 2
 
+				// 提取 package 属性（用于安全检查）
+				pkgMatch := regexp.MustCompile(`package="([^"]*)"`).FindStringSubmatch(nodeStr)
+				elementPackage := ""
+				if len(pkgMatch) >= 2 {
+					elementPackage = pkgMatch[1]
+				}
+
+				// 安全检查：如果设置了目标包名，验证元素是否属于目标应用
+				if s.targetPackage != "" && elementPackage != "" {
+					if !s.isPackageSafe(elementPackage) {
+						s.logger.WithFields(logrus.Fields{
+							"text":           text,
+							"elementPackage": elementPackage,
+							"targetPackage":  s.targetPackage,
+							"x":              centerX,
+							"y":              centerY,
+						}).Warn("Skipping button click: element belongs to different package")
+						continue
+					}
+				}
+
 				s.logger.WithFields(logrus.Fields{
-					"text": text,
-					"x":    centerX,
-					"y":    centerY,
+					"text":     text,
+					"package":  elementPackage,
+					"x":        centerX,
+					"y":        centerY,
+					"round":    round,
+					"priority": btnText,
 				}).Info("Found button, clicking...")
 
 				// 点击按钮
@@ -126,48 +219,139 @@ func (s *SmartClicker) findAndClickButton(ctx context.Context, executor ActionEx
 				return true, nil
 			}
 		}
-	}
 
-	// 尝试content-desc
-	descPattern := regexp.MustCompile(`<node[^>]*content-desc="([^"]*)"[^>]*clickable="true"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>`)
-	descMatches := descPattern.FindAllStringSubmatch(xmlContent, -1)
-
-	for _, match := range descMatches {
-		if len(match) < 6 {
-			continue
-		}
-
-		contentDesc := match[1]
-		x1, _ := strconv.Atoi(match[2])
-		y1, _ := strconv.Atoi(match[3])
-		x2, _ := strconv.Atoi(match[4])
-		y2, _ := strconv.Atoi(match[5])
-
-		// 检查content-desc是否匹配
-		for _, btnText := range buttonTexts {
-			if strings.Contains(contentDesc, btnText) {
-				// 计算中心点
-				centerX := (x1 + x2) / 2
-				centerY := (y1 + y2) / 2
-
-				s.logger.WithFields(logrus.Fields{
-					"content-desc": contentDesc,
-					"x":            centerX,
-					"y":            centerY,
-				}).Info("Found button by content-desc, clicking...")
-
-				// 点击按钮
-				err := executor.TapScreen(ctx, centerX, centerY)
-				if err != nil {
-					return false, err
-				}
-
-				return true, nil
+		// 尝试 content-desc（同样增加包名验证）
+		for _, nodeStr := range nodeMatches {
+			if requireClickable && !strings.Contains(nodeStr, `clickable="true"`) {
+				continue
 			}
+
+			// 提取 content-desc 属性
+			descMatch := regexp.MustCompile(`content-desc="([^"]*)"`).FindStringSubmatch(nodeStr)
+			if len(descMatch) < 2 || descMatch[1] == "" {
+				continue
+			}
+			contentDesc := descMatch[1]
+
+			// 检查 content-desc 是否匹配目标按钮
+			matched := false
+			for _, btnText := range buttonTexts {
+				if strings.Contains(contentDesc, btnText) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+
+			// 提取 bounds
+			boundsMatch := regexp.MustCompile(`bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"`).FindStringSubmatch(nodeStr)
+			if len(boundsMatch) < 5 {
+				continue
+			}
+			x1, _ := strconv.Atoi(boundsMatch[1])
+			y1, _ := strconv.Atoi(boundsMatch[2])
+			x2, _ := strconv.Atoi(boundsMatch[3])
+			y2, _ := strconv.Atoi(boundsMatch[4])
+			centerX := (x1 + x2) / 2
+			centerY := (y1 + y2) / 2
+
+			// 提取 package 属性
+			pkgMatch := regexp.MustCompile(`package="([^"]*)"`).FindStringSubmatch(nodeStr)
+			elementPackage := ""
+			if len(pkgMatch) >= 2 {
+				elementPackage = pkgMatch[1]
+			}
+
+			// 安全检查
+			if s.targetPackage != "" && elementPackage != "" {
+				if !s.isPackageSafe(elementPackage) {
+					s.logger.WithFields(logrus.Fields{
+						"content-desc":   contentDesc,
+						"elementPackage": elementPackage,
+						"targetPackage":  s.targetPackage,
+						"x":              centerX,
+						"y":              centerY,
+					}).Warn("Skipping button click: element belongs to different package")
+					continue
+				}
+			}
+
+			s.logger.WithFields(logrus.Fields{
+				"content-desc": contentDesc,
+				"package":      elementPackage,
+				"x":            centerX,
+				"y":            centerY,
+				"round":        round,
+			}).Info("Found button by content-desc, clicking...")
+
+			// 点击按钮
+			err := executor.TapScreen(ctx, centerX, centerY)
+			if err != nil {
+				return false, err
+			}
+
+			return true, nil
 		}
 	}
 
 	return false, nil
+}
+
+// isPackageSafe 检查包名是否安全（属于目标应用或允许的系统弹窗）
+func (s *SmartClicker) isPackageSafe(elementPackage string) bool {
+	// 如果是目标应用，安全
+	if elementPackage == s.targetPackage {
+		return true
+	}
+
+	// 允许的系统包名（权限弹窗、安装确认等需要交互的）
+	allowedSystemPackages := []string{
+		"com.android.permissioncontroller",  // 权限弹窗
+		"com.android.packageinstaller",      // 安装确认
+		"com.google.android.permissioncontroller", // Google 权限弹窗
+		"com.miui.securitycenter",           // MIUI 安全中心权限弹窗
+	}
+
+	for _, pkg := range allowedSystemPackages {
+		if elementPackage == pkg {
+			return true
+		}
+	}
+
+	// 危险包名黑名单（绝对不能点击）
+	dangerousPackages := []string{
+		"com.android.systemui",           // 系统UI（状态栏、导航栏）
+		"com.android.launcher",           // 原生桌面
+		"com.android.launcher3",          // 原生桌面3
+		"com.google.android.apps.nexuslauncher", // Pixel桌面
+		"com.miui.home",                  // 小米桌面
+		"com.huawei.android.launcher",    // 华为桌面
+		"com.oppo.launcher",              // OPPO桌面
+		"com.vivo.launcher",              // vivo桌面
+		"com.oneplus.launcher",           // OnePlus桌面
+		"com.sec.android.app.launcher",   // 三星桌面
+		"com.android.settings",           // 系统设置
+	}
+
+	for _, pkg := range dangerousPackages {
+		if elementPackage == pkg {
+			s.logger.WithFields(logrus.Fields{
+				"elementPackage": elementPackage,
+				"reason":         "dangerous package",
+			}).Debug("Package is in dangerous list")
+			return false
+		}
+	}
+
+	// 其他未知包名，默认不安全（防止误点击其他应用）
+	s.logger.WithFields(logrus.Fields{
+		"elementPackage": elementPackage,
+		"targetPackage":  s.targetPackage,
+		"reason":         "unknown package",
+	}).Debug("Package is unknown, treating as unsafe")
+	return false
 }
 
 // AutoClickPrivacyAgreement 自动点击隐私政策同意按钮
@@ -175,22 +359,38 @@ func (s *SmartClicker) AutoClickPrivacyAgreement(ctx context.Context, executor A
 	s.logger.Info("Auto-clicking privacy agreement...")
 
 	// 常见的同意按钮文本（按优先级排序）
+	// 注意：这些文本会使用精确匹配逻辑（见 findAndClickButton）
 	agreementTexts := []string{
-		"同意",
+		// 最常见的同意按钮
+		"同意并继续",
+		"同意并进入",
 		"我同意",
+		"同意",
+		// 知道了类型
+		"我知道了",
+		"知道了",
+		"好的",
+		"好",
+		// 确认类型
 		"确定",
 		"确认",
+		// 接受/允许
 		"接受",
-		"我知道了",
-		"进入",
-		"继续",
 		"允许",
-		"好的",
+		"授权",
+		// 继续/进入
+		"继续",
+		"进入",
+		"开始体验",
+		"立即体验",
+		"开始使用",
+		// 英文
 		"OK",
 		"Agree",
 		"Accept",
 		"I Agree",
 		"Continue",
+		"Allow",
 	}
 
 	// 复选框相关文本
@@ -255,7 +455,7 @@ func (s *SmartClicker) AutoClickPrivacyAgreement(ctx context.Context, executor A
 	return false, nil
 }
 
-// tryCheckboxes 尝试勾选复选框
+// tryCheckboxes 尝试勾选复选框（增强版：支持包名验证）
 func (s *SmartClicker) tryCheckboxes(ctx context.Context, executor ActionExecutor, checkboxTexts []string) {
 	// 获取UI hierarchy
 	_, err := executor.Shell(ctx, "uiautomator dump /sdcard/checkbox_dump.xml")
@@ -268,26 +468,52 @@ func (s *SmartClicker) tryCheckboxes(ctx context.Context, executor ActionExecuto
 		return
 	}
 
-	// 查找复选框
-	checkboxPattern := regexp.MustCompile(`<node[^>]*class="[^"]*CheckBox"[^>]*checked="false"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>`)
-	matches := checkboxPattern.FindAllStringSubmatch(xmlContent, -1)
+	// 使用更灵活的正则，提取所有 node 元素
+	nodePattern := regexp.MustCompile(`<node[^>]*>`)
+	nodeMatches := nodePattern.FindAllString(xmlContent, -1)
 
-	for _, match := range matches {
-		if len(match) < 5 {
+	for _, nodeStr := range nodeMatches {
+		// 检查是否是未勾选的复选框
+		if !strings.Contains(nodeStr, `CheckBox`) || !strings.Contains(nodeStr, `checked="false"`) {
 			continue
 		}
 
-		x1, _ := strconv.Atoi(match[1])
-		y1, _ := strconv.Atoi(match[2])
-		x2, _ := strconv.Atoi(match[3])
-		y2, _ := strconv.Atoi(match[4])
-
+		// 提取 bounds
+		boundsMatch := regexp.MustCompile(`bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"`).FindStringSubmatch(nodeStr)
+		if len(boundsMatch) < 5 {
+			continue
+		}
+		x1, _ := strconv.Atoi(boundsMatch[1])
+		y1, _ := strconv.Atoi(boundsMatch[2])
+		x2, _ := strconv.Atoi(boundsMatch[3])
+		y2, _ := strconv.Atoi(boundsMatch[4])
 		centerX := (x1 + x2) / 2
 		centerY := (y1 + y2) / 2
 
+		// 提取 package 属性
+		pkgMatch := regexp.MustCompile(`package="([^"]*)"`).FindStringSubmatch(nodeStr)
+		elementPackage := ""
+		if len(pkgMatch) >= 2 {
+			elementPackage = pkgMatch[1]
+		}
+
+		// 安全检查：如果设置了目标包名，验证元素是否属于目标应用
+		if s.targetPackage != "" && elementPackage != "" {
+			if !s.isPackageSafe(elementPackage) {
+				s.logger.WithFields(logrus.Fields{
+					"elementPackage": elementPackage,
+					"targetPackage":  s.targetPackage,
+					"x":              centerX,
+					"y":              centerY,
+				}).Warn("Skipping checkbox click: element belongs to different package")
+				continue
+			}
+		}
+
 		s.logger.WithFields(logrus.Fields{
-			"x": centerX,
-			"y": centerY,
+			"package": elementPackage,
+			"x":       centerX,
+			"y":       centerY,
 		}).Debug("Found unchecked checkbox, clicking...")
 
 		executor.TapScreen(ctx, centerX, centerY)

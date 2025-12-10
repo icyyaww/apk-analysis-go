@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	appDomain "github.com/apk-analysis/apk-analysis-go/internal/domain"
 	"github.com/apk-analysis/apk-analysis-go/internal/repository"
@@ -393,14 +394,44 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 		ipsToQuery = ipsToQuery[:100]
 	}
 
-	// 步骤9: 批量查询IP归属地
+	// 步骤9: 批量查询IP归属地（多源 DNS：电信+移动）
 	s.logger.WithFields(logrus.Fields{
 		"task_id":       taskID,
 		"domains_query": len(domainsToQuery),
 		"ips_query":     len(ipsToQuery),
-	}).Info("🌍 [步骤9] 开始批量查询IP归属地（IP138 API）...")
+	}).Info("🌍 [步骤9] 开始批量查询IP归属地（多源DNS: 电信+移动 -> IP138 API）...")
 
-	ipResults := s.ipLocation.BatchQueryDomains(ctx, domainsToQuery)
+	// 使用多源 DNS 解析（电信+移动）
+	multiResults := s.ipLocation.BatchQueryDomainsMulti(ctx, domainsToQuery)
+
+	// 🔧 修复：保存所有多源 IP 结果，而不是只保存第一个
+	// 使用 "domain:ip" 作为 key，这样同一个域名可以有多条记录（不同 IP/不同来源）
+	ipResults := make(map[string]*IPLocationResult)
+	for domain, multiResult := range multiResults {
+		if len(multiResult.Results) > 0 {
+			for _, result := range multiResult.Results {
+				// 使用 domain:ip 作为 key，确保不同 IP 都能保存
+				key := domain + ":" + result.IP
+				ipResults[key] = result
+
+				// 确保 dns_source 被保存到 Source 字段
+				if result.Info != nil {
+					if dnsSource, ok := result.Info["dns_source"]; ok {
+						result.Source = dnsSource
+					}
+				}
+			}
+
+			// 记录多源 DNS 结果
+			s.logger.WithFields(logrus.Fields{
+				"task_id":    taskID,
+				"domain":     domain,
+				"ip_count":   len(multiResult.Results),
+				"ip_sources": getIPSources(multiResult.Results),
+			}).Info("🔀 [多源DNS] 域名解析到多个 IP")
+		}
+	}
+
 	directIPResults := s.ipLocation.BatchQueryIPs(ctx, ipsToQuery)
 
 	// 合并查询结果
@@ -409,16 +440,23 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 	}
 
 	s.logger.WithFields(logrus.Fields{
-		"task_id":        taskID,
-		"success_count":  len(ipResults),
-	}).Info("✅ [步骤9] IP归属地查询完成")
+		"task_id":       taskID,
+		"success_count": len(ipResults),
+	}).Info("✅ [步骤9] IP归属地查询完成（多源DNS）")
 
 	// 步骤10: 确保所有域名都有记录
 	s.logger.WithField("task_id", taskID).Info("💾 [步骤10] 为未查询成功的域名创建空记录...")
 	emptyRecordCount := 0
+	// 收集已有结果的域名
+	existingDomains := make(map[string]bool)
+	for _, result := range ipResults {
+		existingDomains[result.Domain] = true
+	}
+	// 为没有结果的域名创建空记录
 	for _, domain := range domainsToQuery {
-		if _, exists := ipResults[domain]; !exists {
-			ipResults[domain] = &IPLocationResult{
+		if !existingDomains[domain] {
+			key := domain + ":"
+			ipResults[key] = &IPLocationResult{
 				Domain: domain,
 				IP:     "",
 				Source: "unknown",
@@ -673,8 +711,11 @@ func (s *AnalysisService) saveToDB(
 	ipResults map[string]*IPLocationResult,
 ) error {
 	// 构建 DomainAnalysis 对象
+	now := time.Now()
 	domainAnalysis := &appDomain.TaskDomainAnalysis{
-		TaskID: taskID,
+		TaskID:        taskID,
+		PrimaryDomain: primaryResult.PrimaryDomain, // 🔧 修复：添加 PrimaryDomain 字段
+		AnalyzedAt:    &now,                        // 🔧 修复：添加 AnalyzedAt 字段
 	}
 
 	// 保存主域名分析结果
@@ -786,4 +827,21 @@ type TaskDomainAnalysisResult struct {
 	PrimaryDomain *PrimaryDomainResult `json:"primary_domain"`
 	BeianInfo     []*BeianResult       `json:"beian_info"`
 	IPLocations   []IPLocationResult   `json:"ip_locations"`
+}
+
+// getIPSources 从多源 IP 结果中提取来源信息
+func getIPSources(results []*IPLocationResult) []string {
+	sources := make([]string, 0, len(results))
+	for _, r := range results {
+		if r.Info != nil {
+			if source, ok := r.Info["dns_source"]; ok {
+				sources = append(sources, r.IP+"("+source+")")
+			} else {
+				sources = append(sources, r.IP)
+			}
+		} else {
+			sources = append(sources, r.IP)
+		}
+	}
+	return sources
 }

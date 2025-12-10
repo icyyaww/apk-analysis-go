@@ -334,7 +334,7 @@ func (h *FileHandler) UploadAPKBatch(c *gin.Context) {
 	}
 
 	// 最大同时上传数量限制
-	maxFiles := 20
+	maxFiles := 100
 	if len(files) > maxFiles {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": fmt.Sprintf("最多同时上传 %d 个文件，当前选择了 %d 个", maxFiles, len(files)),

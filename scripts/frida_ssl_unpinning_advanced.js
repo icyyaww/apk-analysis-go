@@ -50,17 +50,25 @@ Java.perform(function() {
     var detectedPacker = detectPacker();
 
     // =============================================
-    // 2. Hook Android 原生 SSL/TLS
+    // 2. Hook Android 原生 SSL/TLS (Java层)
     // =============================================
-    console.log("[*] Step 2: Hooking Android native SSL/TLS...");
+    console.log("[*] Step 2: Hooking Android native SSL/TLS (Java)...");
 
     try {
         var TrustManagerImpl = Java.use("com.android.org.conscrypt.TrustManagerImpl");
+        var ArrayList = Java.use("java.util.ArrayList");
 
-        // Hook checkTrustedRecursive
+        // Hook checkTrustedRecursive - 返回类型是 java.util.List
         TrustManagerImpl.checkTrustedRecursive.implementation = function(certs, host, clientAuth, untrustedChain, trustAnchorChain, used) {
             console.log("[+] Bypassing TrustManagerImpl.checkTrustedRecursive for: " + host);
-            return certs; // 返回证书链，跳过验证
+            // 需要返回 java.util.List 类型的证书链
+            var resultList = ArrayList.$new();
+            if (certs !== null) {
+                for (var i = 0; i < certs.length; i++) {
+                    resultList.add(certs[i]);
+                }
+            }
+            return resultList;
         };
 
         // Hook verifyChain
@@ -69,9 +77,59 @@ Java.perform(function() {
             return untrustedChain; // 直接返回
         };
 
-        console.log("[✓] Android native SSL hooks installed successfully");
+        console.log("[✓] Android native SSL hooks (Java) installed successfully");
     } catch(e) {
         console.log("[-] Android native SSL hook failed: " + e.message);
+    }
+
+    // =============================================
+    // 2.1 Hook Conscrypt/BoringSSL Native层 (关键！)
+    // =============================================
+    console.log("[*] Step 2.1: Hooking Conscrypt native SSL verification...");
+
+    try {
+        // Hook SSL_CTX_set_custom_verify - BoringSSL 的自定义验证回调
+        var ssl_set_custom_verify = Module.findExportByName("libssl.so", "SSL_CTX_set_custom_verify") ||
+                                     Module.findExportByName("libssl.so", "SSL_set_custom_verify");
+        if (ssl_set_custom_verify) {
+            Interceptor.attach(ssl_set_custom_verify, {
+                onEnter: function(args) {
+                    console.log("[+] Bypassing SSL_set_custom_verify - disabling custom verification");
+                    // 设置验证模式为 SSL_VERIFY_NONE (0)
+                    args[1] = ptr(0);
+                }
+            });
+            console.log("[✓] SSL_CTX_set_custom_verify hooked");
+        }
+
+        // Hook SSL_CTX_set_verify - 标准 OpenSSL/BoringSSL 验证设置
+        var ssl_ctx_set_verify = Module.findExportByName("libssl.so", "SSL_CTX_set_verify");
+        if (ssl_ctx_set_verify) {
+            Interceptor.attach(ssl_ctx_set_verify, {
+                onEnter: function(args) {
+                    console.log("[+] Bypassing SSL_CTX_set_verify - setting SSL_VERIFY_NONE");
+                    // 设置验证模式为 SSL_VERIFY_NONE (0)
+                    args[1] = ptr(0);
+                }
+            });
+            console.log("[✓] SSL_CTX_set_verify hooked");
+        }
+
+        // Hook SSL_set_verify
+        var ssl_set_verify = Module.findExportByName("libssl.so", "SSL_set_verify");
+        if (ssl_set_verify) {
+            Interceptor.attach(ssl_set_verify, {
+                onEnter: function(args) {
+                    console.log("[+] Bypassing SSL_set_verify - setting SSL_VERIFY_NONE");
+                    args[1] = ptr(0);
+                }
+            });
+            console.log("[✓] SSL_set_verify hooked");
+        }
+
+        console.log("[✓] Conscrypt native SSL hooks installed");
+    } catch(e) {
+        console.log("[-] Conscrypt native SSL hook failed: " + e.message);
     }
 
     // =============================================
@@ -113,15 +171,41 @@ Java.perform(function() {
 
         // Hook buildCertificateChainCleaner - 这是 PS拼图.apk 失败的地方
         Platform.buildCertificateChainCleaner.overload('javax.net.ssl.X509TrustManager').implementation = function(trustManager) {
-            console.log("[!] ⚡ Bypassing Platform.buildCertificateChainCleaner (PS拼图 fix!)");
-            // 返回 null，让 OkHttp 跳过证书链清理
-            // 这样可以避免 buildCertificateChainCleaner 抛出异常
-            return null;
+            console.log("[!] ⚡ Platform.buildCertificateChainCleaner called - returning original result");
+            // 调用原始方法获取真正的 CertificateChainCleaner
+            // 不能返回 null，否则 OkHttp 会在后续调用中崩溃
+            return this.buildCertificateChainCleaner(trustManager);
         };
 
         console.log("[✓] OkHttp Platform.buildCertificateChainCleaner hook installed (PS拼图 fix applied!)");
     } catch(e) {
         console.log("[-] OkHttp Platform hook failed: " + e.message);
+    }
+
+    // =============================================
+    // 4.1 Hook AndroidCertificateChainCleaner.clean() - 虎扑关键修复
+    // =============================================
+    console.log("[*] Step 4.1: Hooking AndroidCertificateChainCleaner.clean()...");
+
+    try {
+        var AndroidCertificateChainCleaner = Java.use("okhttp3.internal.platform.android.AndroidCertificateChainCleaner");
+        var ArrayList = Java.use("java.util.ArrayList");
+
+        AndroidCertificateChainCleaner.clean.implementation = function(chain, hostname) {
+            console.log("[+] Bypassing AndroidCertificateChainCleaner.clean() for: " + hostname);
+            // 返回原始证书链，不进行清理
+            var resultList = ArrayList.$new();
+            if (chain !== null) {
+                for (var i = 0; i < chain.size(); i++) {
+                    resultList.add(chain.get(i));
+                }
+            }
+            return resultList;
+        };
+
+        console.log("[✓] AndroidCertificateChainCleaner.clean() hook installed (虎扑 fix!)");
+    } catch(e) {
+        console.log("[-] AndroidCertificateChainCleaner hook failed: " + e.message);
     }
 
     // =============================================

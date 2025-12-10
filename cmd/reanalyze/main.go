@@ -32,9 +32,9 @@ func main() {
 	taskRepo := repository.NewTaskRepository(db, logger)
 	analysisService := domainanalysis.NewAnalysisService(db, taskRepo, logger)
 
-	// 重新分析淘宝任务（验证SDK修复）
+	// 重新分析京东金融任务（修复 primary_domain_json 字段问题 - LONGTEXT）
 	tasks := map[string]string{
-		"4fd95c48-dbc7-4876-9b22-162ee44a3a09": "com.taobao.taobao",
+		"eb72b320-d357-4a3c-8201-e0d06e759dd7": "com.jd.jrapp",
 	}
 
 	for taskID, pkg := range tasks {

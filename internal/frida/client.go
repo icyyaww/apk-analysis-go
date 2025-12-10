@@ -14,11 +14,12 @@ import (
 
 // Client Frida 客户端
 type Client struct {
-	adbTarget    string // ADB 设备地址
-	fridaServer  string // frida-server 二进制路径
-	devicePath   string // 设备上 frida-server 路径
-	logger       *logrus.Logger
-	serverCmd    *exec.Cmd // frida-server 进程
+	adbTarget       string         // ADB 设备地址
+	fridaHost       string         // Frida 网络连接地址（WiFi 模式），如 "192.168.2.34:27042"
+	fridaServer     string         // frida-server 二进制路径
+	devicePath      string         // 设备上 frida-server 路径
+	logger          *logrus.Logger
+	serverCmd       *exec.Cmd      // frida-server 进程
 	isServerRunning bool
 }
 
@@ -26,6 +27,19 @@ type Client struct {
 func NewClient(adbTarget string, logger *logrus.Logger) *Client {
 	return &Client{
 		adbTarget:   adbTarget,
+		fridaHost:   "",  // 空表示使用 USB 模式
+		fridaServer: "./bin/frida-server",
+		devicePath:  "/data/local/tmp/frida-server",
+		logger:      logger,
+	}
+}
+
+// NewClientWithHost 创建支持 WiFi 模式的 Frida 客户端
+// fridaHost: Frida 服务器网络地址，如 "192.168.2.34:27042"
+func NewClientWithHost(adbTarget, fridaHost string, logger *logrus.Logger) *Client {
+	return &Client{
+		adbTarget:   adbTarget,
+		fridaHost:   fridaHost,
 		fridaServer: "./bin/frida-server",
 		devicePath:  "/data/local/tmp/frida-server",
 		logger:      logger,
@@ -112,10 +126,14 @@ func (c *Client) StopServer(ctx context.Context) error {
 }
 
 // InjectScript 注入 Frida 脚本到应用
+// 根据 fridaHost 配置自动选择连接模式：
+//   - fridaHost 为空: 使用 USB 模式 (-U)
+//   - fridaHost 不为空: 使用网络模式 (-H host:port)
 func (c *Client) InjectScript(ctx context.Context, packageName, scriptPath string) error {
 	c.logger.WithFields(logrus.Fields{
-		"package": packageName,
-		"script":  scriptPath,
+		"package":    packageName,
+		"script":     scriptPath,
+		"frida_host": c.fridaHost,
 	}).Info("Injecting Frida script")
 
 	// 检查脚本文件
@@ -123,14 +141,29 @@ func (c *Client) InjectScript(ctx context.Context, packageName, scriptPath strin
 		return fmt.Errorf("script file not found: %s", scriptPath)
 	}
 
-	// 使用 frida 命令行工具注入脚本
-	// frida -U -f <package> -l <script> --no-pause
-	cmd := exec.CommandContext(ctx, "frida",
-		"-U",                    // USB 设备
-		"-f", packageName,       // 启动应用
-		"-l", scriptPath,        // 加载脚本
-		"--no-pause",            // 不暂停
-	)
+	// 构建 frida 命令参数
+	var args []string
+	if c.fridaHost != "" {
+		// WiFi 模式：使用 -H 参数连接到远程 frida-server
+		c.logger.WithField("frida_host", c.fridaHost).Info("Using WiFi mode for Frida connection")
+		args = []string{
+			"-H", c.fridaHost,   // 网络连接到 frida-server
+			"-f", packageName,   // 启动应用
+			"-l", scriptPath,    // 加载脚本
+			"--no-pause",        // 不暂停
+		}
+	} else {
+		// USB 模式：使用 -U 参数
+		c.logger.Info("Using USB mode for Frida connection")
+		args = []string{
+			"-U",                // USB 设备
+			"-f", packageName,   // 启动应用
+			"-l", scriptPath,    // 加载脚本
+			"--no-pause",        // 不暂停
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "frida", args...)
 
 	// 后台运行
 	if err := cmd.Start(); err != nil {

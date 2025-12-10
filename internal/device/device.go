@@ -48,6 +48,7 @@ type Device struct {
 	ProxyPort          int         // 代理端口，如 8082
 	MitmproxyContainer string      // Mitmproxy 容器名称，如 "apk-analysis-mitmproxy-1"
 	MitmproxyAPIPort   int         // Mitmproxy API 端口，如 8083, 8085
+	FridaHost          string      // Frida 网络连接地址，如 "192.168.2.34:27042"（WiFi 模式）
 	Arch               DeviceArch  // 设备 CPU 架构（arm/x86）
 	mutex              sync.Mutex  // 设备级互斥锁
 	inUse              bool        // 是否正在使用

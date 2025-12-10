@@ -20,23 +20,34 @@ type RabbitMQConfig struct {
 
 // RabbitMQ RabbitMQ 客户端
 type RabbitMQ struct {
-	config     *RabbitMQConfig
-	conn       *amqp.Connection
-	channel    *amqp.Channel
-	logger     *logrus.Logger
-	queueName  string
-	reconnect  chan bool
-	maxRetries int
+	config        *RabbitMQConfig
+	conn          *amqp.Connection
+	channel       *amqp.Channel
+	logger        *logrus.Logger
+	queueName     string
+	reconnect     chan bool
+	maxRetries    int
+	prefetchCount int // 预取数量，应与 worker 数量匹配
 }
 
 // NewRabbitMQ 创建 RabbitMQ 客户端
 func NewRabbitMQ(config *RabbitMQConfig, queueName string, logger *logrus.Logger) (*RabbitMQ, error) {
+	return NewRabbitMQWithPrefetch(config, queueName, 1, logger)
+}
+
+// NewRabbitMQWithPrefetch 创建 RabbitMQ 客户端，支持自定义 prefetch count
+// prefetchCount 应与 worker 数量匹配，以实现并行消费
+func NewRabbitMQWithPrefetch(config *RabbitMQConfig, queueName string, prefetchCount int, logger *logrus.Logger) (*RabbitMQ, error) {
+	if prefetchCount <= 0 {
+		prefetchCount = 1
+	}
 	mq := &RabbitMQ{
-		config:     config,
-		logger:     logger,
-		queueName:  queueName,
-		reconnect:  make(chan bool, 1),
-		maxRetries: 10,
+		config:        config,
+		logger:        logger,
+		queueName:     queueName,
+		reconnect:     make(chan bool, 1),
+		maxRetries:    10,
+		prefetchCount: prefetchCount,
 	}
 
 	if err := mq.connect(); err != nil {
@@ -72,12 +83,13 @@ func (mq *RabbitMQ) connect() error {
 	}
 	mq.channel = ch
 
-	// 设置 QoS (预取数量)
-	if err := ch.Qos(1, 0, false); err != nil {
+	// 设置 QoS (预取数量) - 使用配置的 prefetchCount 以支持并行消费
+	if err := ch.Qos(mq.prefetchCount, 0, false); err != nil {
 		ch.Close()
 		conn.Close()
 		return fmt.Errorf("failed to set QoS: %w", err)
 	}
+	mq.logger.WithField("prefetch_count", mq.prefetchCount).Info("RabbitMQ QoS configured")
 
 	// 声明队列
 	_, err = ch.QueueDeclare(

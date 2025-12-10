@@ -1,6 +1,7 @@
 package domainanalysis
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,37 +9,63 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
+// RemoteDNSServer 远程 DNS 解析服务器配置
+type RemoteDNSServer struct {
+	Name     string // 服务器名称（如：移动、联通）
+	Host     string // SSH 主机地址
+	Port     string // SSH 端口
+	User     string // SSH 用户名
+	Password string // SSH 密码
+	Enabled  bool   // 是否启用
+}
+
 // IPLocationClient IP 归属地查询客户端
 type IPLocationClient struct {
-	httpClient  *http.Client
-	logger      *logrus.Logger
-	ip138URL    string
-	ip138Token  string
-	vvhanURL    string
-	cache       map[string]*IPLocationResult // 简单内存缓存
+	httpClient       *http.Client
+	logger           *logrus.Logger
+	ip138URL         string
+	ip138Token       string
+	vvhanURL         string
+	cache            map[string]*IPLocationResult // 简单内存缓存
+	remoteDNSServers []RemoteDNSServer            // 远程 DNS 服务器列表
+	enableMultiDNS   bool                         // 是否启用多源 DNS 解析
 }
 
 // NewIPLocationClient 创建 IP 归属地查询客户端
 func NewIPLocationClient(logger *logrus.Logger) *IPLocationClient {
-	return &IPLocationClient{
+	client := &IPLocationClient{
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger:     logger,
-		ip138URL:   "https://api.ip138.com/ip/?datatype=jsonp&ip=",
-		ip138Token: "912d1e809877cad833f2a45d919622c7",
-		vvhanURL:   "https://api.vvhan.com/api/getIpInfo", // 免费 IP 查询 API（备用）
-		cache:      make(map[string]*IPLocationResult),
+		logger:         logger,
+		ip138URL:       "https://api.ip138.com/ip/?datatype=jsonp&ip=",
+		ip138Token:     "912d1e809877cad833f2a45d919622c7",
+		vvhanURL:       "https://api.vvhan.com/api/getIpInfo", // 免费 IP 查询 API（备用）
+		cache:          make(map[string]*IPLocationResult),
+		enableMultiDNS: true, // 默认启用多源 DNS
+		remoteDNSServers: []RemoteDNSServer{
+			{
+				Name:     "移动",
+				Host:     "36.137.90.163",
+				Port:     "22",
+				User:     "root",
+				Password: "13Xjyt@18031",
+				Enabled:  true,
+			},
+		},
 	}
+	return client
 }
 
-// QueryDomainLocation 查询域名的 IP 归属地
+// QueryDomainLocation 查询域名的 IP 归属地（单个 IP，兼容旧接口）
 func (c *IPLocationClient) QueryDomainLocation(ctx context.Context, domain string) *IPLocationResult {
 	c.logger.WithField("domain", domain).Debug("Querying domain IP location")
 
@@ -54,6 +81,68 @@ func (c *IPLocationClient) QueryDomainLocation(ctx context.Context, domain strin
 
 	// 2. 查询 IP 归属地
 	return c.QueryIPLocation(ctx, ip, domain)
+}
+
+// MultiIPLocationResult 多源 DNS 解析的 IP 归属地结果
+type MultiIPLocationResult struct {
+	Domain  string              `json:"domain"`
+	Results []*IPLocationResult `json:"results"` // 多个 IP 的归属地结果
+}
+
+// QueryDomainLocationMulti 查询域名的多源 IP 归属地（电信+移动解析后去重）
+func (c *IPLocationClient) QueryDomainLocationMulti(ctx context.Context, domain string) *MultiIPLocationResult {
+	c.logger.WithField("domain", domain).Info("Querying domain IP location (multi-source)")
+
+	// 1. 多源 DNS 解析获取所有 IP
+	dnsResults := c.resolveDomainMulti(domain)
+	if len(dnsResults) == 0 {
+		return &MultiIPLocationResult{
+			Domain: domain,
+			Results: []*IPLocationResult{
+				{Domain: domain, Error: "no IP found from any DNS source"},
+			},
+		}
+	}
+
+	// 2. 查询每个 IP 的归属地
+	var results []*IPLocationResult
+	for _, dns := range dnsResults {
+		result := c.QueryIPLocation(ctx, dns.IP, domain)
+		// 添加 DNS 来源信息
+		if result.Info == nil {
+			result.Info = make(map[string]string)
+		}
+		result.Info["dns_source"] = dns.Source
+		results = append(results, result)
+
+		// 限流
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"domain":    domain,
+		"ip_count":  len(results),
+	}).Info("Multi-source IP location query completed")
+
+	return &MultiIPLocationResult{
+		Domain:  domain,
+		Results: results,
+	}
+}
+
+// BatchQueryDomainsMulti 批量查询域名的多源归属地
+func (c *IPLocationClient) BatchQueryDomainsMulti(ctx context.Context, domains []string) map[string]*MultiIPLocationResult {
+	results := make(map[string]*MultiIPLocationResult)
+
+	for _, domain := range domains {
+		result := c.QueryDomainLocationMulti(ctx, domain)
+		results[domain] = result
+
+		// 限流
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return results
 }
 
 // QueryIPLocation 查询 IP 归属地（优先IP138，失败则使用vvhan）
@@ -129,8 +218,23 @@ func (c *IPLocationClient) BatchQueryIPs(ctx context.Context, ips []string) map[
 	return results
 }
 
-// resolveDomain DNS 解析域名
+// DNSResult DNS 解析结果
+type DNSResult struct {
+	IP     string // 解析到的 IP
+	Source string // 来源（本地-电信、远程-移动等）
+}
+
+// resolveDomain DNS 解析域名（返回单个 IP，兼容旧接口）
 func (c *IPLocationClient) resolveDomain(domain string) (string, error) {
+	results := c.resolveDomainMulti(domain)
+	if len(results) == 0 {
+		return "", fmt.Errorf("no IP found for domain")
+	}
+	return results[0].IP, nil
+}
+
+// resolveDomainMulti 多源 DNS 解析域名（电信+移动），返回去重后的 IP 列表
+func (c *IPLocationClient) resolveDomainMulti(domain string) []DNSResult {
 	// 清理域名
 	domain = strings.TrimPrefix(domain, "http://")
 	domain = strings.TrimPrefix(domain, "https://")
@@ -141,25 +245,128 @@ func (c *IPLocationClient) resolveDomain(domain string) (string, error) {
 		domain = domain[:idx]
 	}
 
-	// DNS 查询
-	ips, err := net.LookupIP(domain)
-	if err != nil {
-		return "", fmt.Errorf("DNS lookup failed: %w", err)
-	}
+	var results []DNSResult
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 
-	if len(ips) == 0 {
-		return "", fmt.Errorf("no IP found for domain")
-	}
+	// 1. 本地 DNS 解析（电信）
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ips := c.resolveLocal(domain)
+		mu.Lock()
+		for _, ip := range ips {
+			results = append(results, DNSResult{IP: ip, Source: "本地-电信"})
+		}
+		mu.Unlock()
+	}()
 
-	// 返回第一个 IPv4 地址
-	for _, ip := range ips {
-		if ipv4 := ip.To4(); ipv4 != nil {
-			return ipv4.String(), nil
+	// 2. 远程 DNS 解析（移动等）
+	if c.enableMultiDNS {
+		for _, server := range c.remoteDNSServers {
+			if !server.Enabled {
+				continue
+			}
+			wg.Add(1)
+			go func(srv RemoteDNSServer) {
+				defer wg.Done()
+				ips := c.resolveViaSSH(domain, srv)
+				mu.Lock()
+				for _, ip := range ips {
+					results = append(results, DNSResult{IP: ip, Source: "远程-" + srv.Name})
+				}
+				mu.Unlock()
+			}(server)
 		}
 	}
 
-	// 如果没有 IPv4,返回第一个 IP
-	return ips[0].String(), nil
+	wg.Wait()
+
+	// 去重：保留第一个出现的来源
+	seen := make(map[string]bool)
+	var uniqueResults []DNSResult
+	for _, r := range results {
+		if !seen[r.IP] {
+			seen[r.IP] = true
+			uniqueResults = append(uniqueResults, r)
+		}
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"domain":       domain,
+		"total_ips":    len(results),
+		"unique_ips":   len(uniqueResults),
+		"results":      uniqueResults,
+	}).Debug("Multi-source DNS resolution completed")
+
+	return uniqueResults
+}
+
+// resolveLocal 本地 DNS 解析
+func (c *IPLocationClient) resolveLocal(domain string) []string {
+	ips, err := net.LookupIP(domain)
+	if err != nil {
+		c.logger.WithError(err).WithField("domain", domain).Debug("Local DNS lookup failed")
+		return nil
+	}
+
+	var result []string
+	for _, ip := range ips {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			result = append(result, ipv4.String())
+		}
+	}
+	return result
+}
+
+// resolveViaSSH 通过 SSH 在远程服务器执行 DNS 解析
+func (c *IPLocationClient) resolveViaSSH(domain string, server RemoteDNSServer) []string {
+	// 使用 sshpass 执行远程命令
+	// 命令: dig +short domain A 或 getent hosts domain
+	cmd := exec.Command("sshpass", "-p", server.Password,
+		"ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+		"-p", server.Port,
+		fmt.Sprintf("%s@%s", server.User, server.Host),
+		fmt.Sprintf("dig +short %s A 2>/dev/null || getent hosts %s | awk '{print $1}'", domain, domain))
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		c.logger.WithFields(logrus.Fields{
+			"domain": domain,
+			"server": server.Name,
+			"error":  err.Error(),
+			"stderr": stderr.String(),
+		}).Debug("Remote DNS resolution via SSH failed")
+		return nil
+	}
+
+	// 解析输出，每行一个 IP
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		return nil
+	}
+
+	lines := strings.Split(output, "\n")
+	var result []string
+	for _, line := range lines {
+		ip := strings.TrimSpace(line)
+		// 验证是否是有效的 IPv4 地址
+		if net.ParseIP(ip) != nil && strings.Contains(ip, ".") {
+			result = append(result, ip)
+		}
+	}
+
+	c.logger.WithFields(logrus.Fields{
+		"domain": domain,
+		"server": server.Name,
+		"ips":    result,
+	}).Debug("Remote DNS resolution successful")
+
+	return result
 }
 
 // queryIP138API 调用 IP138 API 查询 IP 归属地
