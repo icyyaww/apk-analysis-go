@@ -50,17 +50,44 @@ func (c *Client) IsConnected(ctx context.Context) bool {
 // Install 安装 APK
 // -r: 替换已存在的应用
 // -g: 自动授予所有运行时权限（网络、存储、相机、定位等）
+// 注意：Android 11+ 不支持 -g 参数（需要 INSTALL_GRANT_RUNTIME_PERMISSIONS 权限），会自动降级到不带 -g 的安装
 func (c *Client) Install(ctx context.Context, apkPath string) error {
 	c.logger.WithField("apk_path", apkPath).Info("Installing APK with auto-grant permissions")
 
+	// 先尝试带 -g 参数安装（自动授予权限）
 	cmd := exec.CommandContext(ctx, "adb", "-s", c.target, "install", "-r", "-g", apkPath)
 	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("adb install failed: %w, output: %s", err, string(output))
-	}
+	outputStr := string(output)
 
-	if !strings.Contains(string(output), "Success") {
-		return fmt.Errorf("install failed: %s", string(output))
+	// 检查是否因为 Android 11+ 权限问题失败
+	// 错误信息：SecurityException: You need the android.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS permission
+	if err != nil || !strings.Contains(outputStr, "Success") {
+		if strings.Contains(outputStr, "INSTALL_GRANT_RUNTIME_PERMISSIONS") ||
+			strings.Contains(outputStr, "SecurityException") {
+			c.logger.Warn("Auto-grant permissions not supported on this device (Android 11+), retrying without -g flag")
+
+			// 降级到不带 -g 参数的安装
+			cmd = exec.CommandContext(ctx, "adb", "-s", c.target, "install", "-r", apkPath)
+			output, err = cmd.CombinedOutput()
+			outputStr = string(output)
+
+			if err != nil {
+				return fmt.Errorf("adb install failed (without -g): %w, output: %s", err, outputStr)
+			}
+
+			if !strings.Contains(outputStr, "Success") {
+				return fmt.Errorf("install failed (without -g): %s", outputStr)
+			}
+
+			c.logger.Info("APK installed successfully (permissions need to be granted manually)")
+			return nil
+		}
+
+		// 其他错误
+		if err != nil {
+			return fmt.Errorf("adb install failed: %w, output: %s", err, outputStr)
+		}
+		return fmt.Errorf("install failed: %s", outputStr)
 	}
 
 	c.logger.Info("APK installed successfully (all permissions granted)")

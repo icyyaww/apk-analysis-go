@@ -86,7 +86,7 @@ func main() {
 	device1 := &device.Device{
 		ID:                 "oneplus-5t",
 		ADBTarget:          "192.168.2.100:5555",              // WiFi ADB地址（固定端口）
-		ProxyHost:          "192.168.2.33",                    // 宿主机IP（与真机同网段）
+		ProxyHost:          "192.168.2.188",                   // 宿主机IP（服务器地址）
 		ProxyPort:          8082,                              // mitmproxy-1 代理端口
 		MitmproxyContainer: "apk-analysis-mitmproxy-1",        // Mitmproxy容器名称
 		MitmproxyAPIPort:   8083,                              // mitmproxy-1 API端口
@@ -95,22 +95,7 @@ func main() {
 	}
 	deviceMgr.AddDevice(device1)
 
-	// Device 2: Redmi Note 11 Pro 5G (Android 13, Magisk root)
-	// 注意：MIUI 无线调试端口每次重启会变化，需要手动更新
-	// 重要：使用独立的 mitmproxy-2 避免并发任务流量混合
-	device2 := &device.Device{
-		ID:                 "redmi-note11pro",
-		ADBTarget:          "192.168.2.34:46329",              // WiFi ADB地址（MIUI无线调试端口，需手动更新）
-		ProxyHost:          "192.168.2.33",                    // 宿主机IP（与真机同网段）
-		ProxyPort:          8084,                              // mitmproxy-2 代理端口（独立代理，避免流量混合）
-		MitmproxyContainer: "apk-analysis-mitmproxy-2",        // Mitmproxy容器名称
-		MitmproxyAPIPort:   8083,                              // mitmproxy-2 API端口（容器内部端口，不是宿主机映射端口）
-		FridaHost:          "192.168.2.34:27042",              // Frida WiFi连接地址
-		Arch:               device.ArchARM,                    // ARM 架构真机
-	}
-	deviceMgr.AddDevice(device2)
-
-	logger.Info("BUILD_VERSION_20251208_DUAL_DEVICE_FRIDA_WIFI") // 编译版本标记
+	logger.Info("BUILD_VERSION_20251215_SINGLE_DEVICE_ONEPLUS") // 编译版本标记
 
 	// 配置设备休息参数（每执行10个任务，休息30秒）
 	deviceMgr.ConfigureDeviceRest(10, 30*time.Second)
@@ -119,13 +104,12 @@ func main() {
 		"device_count": deviceMgr.GetDeviceCount(),
 		"devices": []map[string]interface{}{
 			{"id": device1.ID, "adb": device1.ADBTarget, "frida_host": device1.FridaHost, "proxy_port": device1.ProxyPort},
-			{"id": device2.ID, "adb": device2.ADBTarget, "frida_host": device2.FridaHost, "proxy_port": device2.ProxyPort},
 		},
-	}).Info("Device manager initialized with 2 devices (OnePlus 5T + Redmi Note 11 Pro)")
+	}).Info("Device manager initialized with 1 device (OnePlus 5T)")
 
 	// 5.5 为所有设备初始化 mitmproxy 证书（带重试机制）
 	logger.Info("Initializing mitmproxy certificates for all devices...")
-	devices := []*device.Device{device1, device2}
+	devices := []*device.Device{device1}
 
 	// 启动异步证书安装任务（避免阻塞服务启动）
 	go func() {

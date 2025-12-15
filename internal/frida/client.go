@@ -84,8 +84,10 @@ func (c *Client) StartServer(ctx context.Context) error {
 
 	c.logger.Info("Starting frida-server")
 
-	// 启动 frida-server (后台运行)
-	cmd := exec.CommandContext(ctx, "adb", "-s", c.adbTarget, "shell", c.devicePath)
+	// 启动 frida-server (后台运行，监听所有接口以支持 WiFi 模式)
+	// -l 0.0.0.0 让 frida-server 监听所有网络接口，而不仅仅是 localhost
+	// -D 后台运行模式
+	cmd := exec.CommandContext(ctx, "adb", "-s", c.adbTarget, "shell", "su -c '"+c.devicePath+" -l 0.0.0.0 -D &'")
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start frida-server: %w", err)
 	}
@@ -150,7 +152,6 @@ func (c *Client) InjectScript(ctx context.Context, packageName, scriptPath strin
 			"-H", c.fridaHost,   // 网络连接到 frida-server
 			"-f", packageName,   // 启动应用
 			"-l", scriptPath,    // 加载脚本
-			"--no-pause",        // 不暂停
 		}
 	} else {
 		// USB 模式：使用 -U 参数
@@ -159,7 +160,6 @@ func (c *Client) InjectScript(ctx context.Context, packageName, scriptPath strin
 			"-U",                // USB 设备
 			"-f", packageName,   // 启动应用
 			"-l", scriptPath,    // 加载脚本
-			"--no-pause",        // 不暂停
 		}
 	}
 

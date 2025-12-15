@@ -40,6 +40,8 @@ type TaskRepository interface {
 	IncrementRetryCount(ctx context.Context, id string) (int, error)
 	ResetForRetry(ctx context.Context, id string) error
 	GetRetryCount(ctx context.Context, id string) (int, error)
+	// 更新应用特征标记
+	UpdateLoginRequired(ctx context.Context, id string, loginRequired bool) error
 }
 
 type taskRepo struct {
@@ -673,4 +675,27 @@ func (r *taskRepo) GetRetryCount(ctx context.Context, id string) (int, error) {
 	}
 
 	return task.RetryCount, nil
+}
+
+// UpdateLoginRequired 更新应用是否需要强制登录的标记
+func (r *taskRepo) UpdateLoginRequired(ctx context.Context, id string, loginRequired bool) error {
+	result := r.db.WithContext(ctx).
+		Model(&domain.Task{}).
+		Where("id = ?", id).
+		Update("login_required", loginRequired)
+
+	if result.Error != nil {
+		r.logger.WithError(result.Error).WithFields(logrus.Fields{
+			"task_id":        id,
+			"login_required": loginRequired,
+		}).Error("Failed to update login_required")
+		return result.Error
+	}
+
+	r.logger.WithFields(logrus.Fields{
+		"task_id":        id,
+		"login_required": loginRequired,
+	}).Info("✅ Login required flag updated")
+
+	return nil
 }

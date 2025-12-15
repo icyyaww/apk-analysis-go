@@ -296,8 +296,35 @@ func (o *Orchestrator) ExecuteTask(ctx context.Context, taskID, apkPath string) 
 	// WiFi 代理比 settings put global http_proxy 更可靠，能捕获所有 APP 流量
 	o.logger.Info("Skipping proxy setup - assuming device WiFi proxy is pre-configured")
 
+	// 3.5. 启动应用
+	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "启动应用", 30); err != nil {
+		return err
+	}
+
+	if err := o.launchApp(ctx, packageName, adbClient); err != nil {
+		o.logger.WithError(err).Warn("启动应用失败")
+	} else {
+		o.logger.WithField("package", packageName).Info("应用启动成功")
+	}
+
+	// 等待应用启动完成
+	time.Sleep(3 * time.Second)
+
+	// 3.6. AI 单步交互循环
+	// 由 AI 自动处理协议弹窗、权限请求、登录页面等
+	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "AI 智能交互中", 35); err != nil {
+		return err
+	}
+
+	aiLoopResult := o.runAISingleStepLoop(ctx, taskID, packageName, adbClient)
+	o.logger.WithFields(logrus.Fields{
+		"total_steps":   aiLoopResult.TotalSteps,
+		"success_steps": aiLoopResult.SuccessSteps,
+		"exit_reason":   aiLoopResult.ExitReason,
+	}).Info("AI 单步交互循环结果")
+
 	// 4. 提取 Activity 列表
-	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "提取 Activity 列表", 35); err != nil {
+	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "提取 Activity 列表", 40); err != nil {
 		return err
 	}
 
@@ -307,7 +334,7 @@ func (o *Orchestrator) ExecuteTask(ctx context.Context, taskID, apkPath string) 
 	}
 
 	// 5. 过滤 Activity
-	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "智能过滤 Activity", 50); err != nil {
+	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "智能过滤 Activity", 45); err != nil {
 		return err
 	}
 
@@ -321,7 +348,7 @@ func (o *Orchestrator) ExecuteTask(ctx context.Context, taskID, apkPath string) 
 	}
 
 	// 6. 遍历 Activity
-	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "开始遍历 Activity", 60); err != nil {
+	if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusRunning, "开始遍历 Activity", 50); err != nil {
 		return err
 	}
 
@@ -1719,6 +1746,117 @@ func (o *Orchestrator) runHybridAnalysis(ctx context.Context, taskID, apkPath, p
 	return nil
 }
 
+// ============================================
+// AI 单步交互循环（新方案）
+// ============================================
+
+// ADBUIProvider 实现 ai.UIDataProvider 接口
+type ADBUIProvider struct {
+	adbClient *adb.Client
+	taskDir   string
+	logger    *logrus.Logger
+}
+
+// DumpUIHierarchy 获取 UI 层级 XML 内容
+func (p *ADBUIProvider) DumpUIHierarchy(ctx context.Context) (string, error) {
+	// 使用临时文件
+	tmpPath := filepath.Join(p.taskDir, "tmp_ui_dump.xml")
+
+	if err := p.adbClient.DumpUIHierarchy(ctx, tmpPath); err != nil {
+		return "", err
+	}
+
+	// 读取文件内容
+	content, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read UI hierarchy file: %w", err)
+	}
+
+	// 删除临时文件
+	os.Remove(tmpPath)
+
+	return string(content), nil
+}
+
+// TakeScreenshot 截图
+func (p *ADBUIProvider) TakeScreenshot(ctx context.Context, path string) error {
+	return p.adbClient.Screenshot(ctx, path)
+}
+
+// runAISingleStepLoop 运行 AI 单步交互循环
+// 在智能引导阶段之后执行，用于深度探索应用
+func (o *Orchestrator) runAISingleStepLoop(
+	ctx context.Context,
+	taskID, packageName string,
+	adbClient *adb.Client,
+) *ai.AILoopResult {
+	// 检查 AI 交互是否启用
+	if !o.aiInteractionEnabled || o.interactionEngine == nil {
+		o.logger.Info("AI 单步交互未启用，跳过")
+		return &ai.AILoopResult{
+			ExitReason: "AI交互未启用",
+		}
+	}
+
+	taskDir := filepath.Join(o.resultsDir, taskID)
+	os.MkdirAll(taskDir, 0755)
+
+	// 创建 UI 数据提供器
+	uiProvider := &ADBUIProvider{
+		adbClient: adbClient,
+		taskDir:   taskDir,
+		logger:    o.logger,
+	}
+
+	// 获取当前 Activity 名称
+	activityName := "MainActivity" // 默认值
+	if currentActivity, err := adbClient.GetForegroundPackage(ctx); err == nil {
+		activityName = currentActivity
+	}
+
+	// 从配置获取最大步数
+	maxSteps := 20 // 默认值
+	if o.interactionEngine != nil {
+		// 可以从配置读取
+	}
+
+	o.logger.WithFields(logrus.Fields{
+		"task_id":     taskID,
+		"package":     packageName,
+		"max_steps":   maxSteps,
+	}).Info("开始 AI 单步交互循环")
+
+	// 广播状态到前端
+	if o.aiInteractionBroadcaster != nil {
+		o.aiInteractionBroadcaster.BroadcastStatus(taskID, "ai_loop_started")
+	}
+
+	// 执行 AI 交互循环
+	result := o.interactionEngine.RunAIInteractionLoop(
+		ctx,
+		adbClient,
+		uiProvider,
+		packageName,
+		activityName,
+		maxSteps,
+	)
+
+	o.logger.WithFields(logrus.Fields{
+		"task_id":       taskID,
+		"total_steps":   result.TotalSteps,
+		"success_steps": result.SuccessSteps,
+		"exit_reason":   result.ExitReason,
+		"error_count":   len(result.Errors),
+	}).Info("AI 单步交互循环完成")
+
+	// 广播状态到前端
+	if o.aiInteractionBroadcaster != nil {
+		o.aiInteractionBroadcaster.BroadcastStatus(taskID, "ai_loop_completed")
+	}
+
+	return result
+}
+
 // saveStaticAnalysisResult 保存静态分析结果到数据库
 func (o *Orchestrator) saveStaticAnalysisResult(ctx context.Context, taskID string, result *staticanalysis.AnalysisResult, packageName string) error {
 	// 如果 Go 快速分析未能获取基本信息（没有 aapt2），尝试从 Python 深度分析结果中获取
@@ -1804,6 +1942,46 @@ func (o *Orchestrator) saveStaticAnalysisResult(ctx context.Context, taskID stri
 		"mode":         result.AnalysisMode,
 		"duration_ms":  result.AnalysisDuration,
 	}).Info("Static analysis result saved to database")
+
+	return nil
+}
+
+// launchApp 启动应用
+func (o *Orchestrator) launchApp(ctx context.Context, packageName string, adbClient *adb.Client) error {
+	o.logger.WithField("package", packageName).Info("启动应用")
+
+	// 方法1: 使用 monkey 命令启动（最可靠）
+	cmd := fmt.Sprintf("monkey -p %s -c android.intent.category.LAUNCHER 1", packageName)
+	_, err := adbClient.Shell(ctx, cmd)
+	if err != nil {
+		o.logger.WithError(err).Warn("monkey 启动失败，尝试 am start")
+
+		// 方法2: 尝试使用 am start 启动
+		startCmd := fmt.Sprintf("am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER %s", packageName)
+		_, err = adbClient.Shell(ctx, startCmd)
+		if err != nil {
+			return fmt.Errorf("启动应用失败: %w", err)
+		}
+	}
+
+	// 等待应用启动
+	time.Sleep(2 * time.Second)
+
+	// 验证应用是否在前台
+	currentPkg, err := adbClient.GetForegroundPackage(ctx)
+	if err != nil {
+		o.logger.WithError(err).Warn("无法获取前台应用")
+		return nil // 不影响后续流程
+	}
+
+	if currentPkg != packageName {
+		o.logger.WithFields(logrus.Fields{
+			"expected": packageName,
+			"actual":   currentPkg,
+		}).Warn("应用可能未成功启动到前台")
+	} else {
+		o.logger.WithField("package", packageName).Info("应用已成功启动到前台")
+	}
 
 	return nil
 }

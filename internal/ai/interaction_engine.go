@@ -783,3 +783,728 @@ func (e *InteractionEngine) ExecuteActionSafe(ctx context.Context, action Action
 
 	return nil
 }
+
+// ============================================
+// 单步交互循环（新方案）
+// ============================================
+
+// SingleStepAction 单步操作结果
+type SingleStepAction struct {
+	Type      string `json:"type"`                // click, input, scroll, none
+	X         int    `json:"x,omitempty"`         // 点击坐标X
+	Y         int    `json:"y,omitempty"`         // 点击坐标Y
+	Value     string `json:"value,omitempty"`     // input类型的输入值
+	Direction string `json:"direction,omitempty"` // scroll方向: up/down/left/right
+	Reason    string `json:"reason"`              // 操作原因
+}
+
+// PlanNextAction 单步交互：分析当前UI，返回1个最优操作
+func (e *InteractionEngine) PlanNextAction(ctx context.Context, uiData *UIData, activityName string, step int, maxSteps int, history []*SingleStepAction) (*SingleStepAction, error) {
+	// 【优先处理】检测登录页面的协议复选框（必须先勾选才能点击试用）
+	checkboxAction := e.detectAgreementCheckbox(uiData, history)
+	if checkboxAction != nil {
+		e.logger.WithFields(logrus.Fields{
+			"x":      checkboxAction.X,
+			"y":      checkboxAction.Y,
+			"reason": checkboxAction.Reason,
+		}).Info("检测到协议复选框，优先点击")
+		return checkboxAction, nil
+	}
+
+	// 构建精简提示词（包含历史操作）
+	prompt := e.buildSingleStepPrompt(uiData, activityName, step, maxSteps, history)
+
+	// 打印发送给AI的UI元素（方便调试）
+	uiElements := e.formatUIElementsCompact(uiData)
+	e.logger.WithFields(logrus.Fields{
+		"activity":    activityName,
+		"step":        step,
+		"max_steps":   maxSteps,
+		"ui_elements": len(uiData.ClickableElements),
+	}).Info("AI单步分析请求")
+
+	// 打印前500字符的UI元素信息
+	uiPreview := uiElements
+	if len(uiPreview) > 500 {
+		uiPreview = uiPreview[:500] + "..."
+	}
+	e.logger.WithField("ui_preview", uiPreview).Info("发送给AI的UI元素")
+
+	// 调用AI
+	aiResponse, err := e.callAI(ctx, prompt)
+	if err != nil {
+		e.logger.WithError(err).Warn("AI调用失败，使用降级策略")
+		return e.singleStepFallback(uiData), nil
+	}
+
+	// 打印AI原始响应
+	responsePreview := aiResponse
+	if len(responsePreview) > 300 {
+		responsePreview = responsePreview[:300] + "..."
+	}
+	e.logger.WithField("ai_response", responsePreview).Info("AI原始响应")
+
+	// 解析响应
+	action, err := e.parseSingleStepResponse(aiResponse)
+	if err != nil {
+		e.logger.WithError(err).Warn("AI响应解析失败，使用降级策略")
+		return e.singleStepFallback(uiData), nil
+	}
+
+	e.logger.WithFields(logrus.Fields{
+		"type":   action.Type,
+		"reason": action.Reason,
+		"x":      action.X,
+		"y":      action.Y,
+	}).Info("AI返回单步操作")
+
+	return action, nil
+}
+
+// buildSingleStepPrompt 构建单步交互提示词
+func (e *InteractionEngine) buildSingleStepPrompt(uiData *UIData, activityName string, step int, maxSteps int, history []*SingleStepAction) string {
+	// 简化UI元素信息
+	uiElements := e.formatUIElementsCompact(uiData)
+
+	// 构建历史操作信息
+	historyStr := ""
+	if len(history) > 0 {
+		var historyLines []string
+		for i, action := range history {
+			if i >= 5 { // 最多显示最近5次操作
+				break
+			}
+			historyLines = append(historyLines, fmt.Sprintf("- 第%d步: %s (%s)", i+1, action.Reason, action.Type))
+		}
+		historyStr = fmt.Sprintf("\n**已执行操作**:\n%s\n⚠️ 不要重复执行已做过的操作！如果复选框已点击过，接下来应该点击[试用/跳过]按钮。\n", strings.Join(historyLines, "\n"))
+	}
+
+	prompt := fmt.Sprintf(`你是Android自动化测试专家。分析当前界面，返回【1个最优操作】以触发网络请求。
+
+**界面信息**:
+- Activity: %s
+- 第 %d/%d 步
+%s
+**UI元素（坐标已给出，必须使用这些坐标！）**:
+%s
+
+**策略规则（按优先级）**:
+1. 如果复选框已点击过（看历史操作） → 直接点击"试用/跳过"按钮
+2. 协议复选框 → 如果页面有"同意协议/隐私政策"文字，找到附近没有文字但有ID的小元素，这是复选框
+3. 跳过登录/试用 → 点击（试用/跳过/游客/体验/先逛逛/暂不登录/稀后）
+4. 系统Open按钮 → 点击进入应用（Open/打开/启动）
+5. 权限/协议同意 → 必须点击（同意/允许/确定/Accept/Allow/OK/继续/我知道了）
+6. 高价值按钮 → 触发请求（搜索/刷新/分享/详情/更多/查看/进入）
+7. 导航Tab → 切换页面（首页/发现/推荐/我的/消息）
+8. 滚动浏览 → 触发懒加载
+9. 🚫 禁止点击：拒绝/不同意/取消/退出/返回/关闭/微信登录/QQ登录/手机登录/登录/注册
+
+**⚠️ 重要规则**:
+- x和y坐标必须从上面的UI元素列表中选择，不要自己编造坐标！
+- 不要重复执行相同坐标的操作！
+- 复选框识别：如果列表中有一个元素只有ID没有文字（如"ID:xxx 坐标:(212,1991)"），且附近有"协议/政策/同意"文字，这就是复选框
+
+**输出**（严格JSON，只返回一个）:
+{"type":"click","x":945,"y":125,"reason":"点击试用按钮跳过登录"}
+{"type":"scroll","direction":"down","reason":"向下滚动加载更多"}
+{"type":"none","reason":"纯展示页面，无可操作元素"}
+
+只返回JSON，不要任何解释。`, activityName, step, maxSteps, historyStr, uiElements)
+
+	return prompt
+}
+
+// detectAgreementCheckbox 检测登录页面的协议复选框
+// 如果检测到未勾选的复选框，返回点击操作；否则返回nil
+func (e *InteractionEngine) detectAgreementCheckbox(uiData *UIData, history []*SingleStepAction) *SingleStepAction {
+	// 检查历史操作中是否已经点击过复选框
+	for _, action := range history {
+		if strings.Contains(action.Reason, "复选框") || strings.Contains(action.Reason, "checkbox") {
+			return nil // 已经点击过复选框
+		}
+	}
+
+	// 查找包含协议文字的元素
+	var agreementElem *UIElement
+	for i := range uiData.ClickableElements {
+		elem := &uiData.ClickableElements[i]
+		text := strings.ToLower(elem.Text + elem.Label)
+		if strings.Contains(text, "同意") && (strings.Contains(text, "协议") || strings.Contains(text, "政策")) {
+			agreementElem = elem
+			break
+		}
+	}
+
+	if agreementElem == nil {
+		return nil // 没有找到协议文字
+	}
+
+	// 查找协议文字附近的小元素（可能是复选框）
+	// 复选框通常在协议文字的左侧，Y坐标相近
+	agreementY := agreementElem.Center[1]
+	var checkboxElem *UIElement
+
+	for i := range uiData.ClickableElements {
+		elem := &uiData.ClickableElements[i]
+		// 跳过有文字的元素（复选框通常没有文字）
+		if elem.Text != "" || elem.Label != "" {
+			continue
+		}
+
+		// 检查是否在协议文字左侧
+		if elem.Center[0] >= agreementElem.Center[0] {
+			continue
+		}
+
+		// 检查Y坐标是否接近（±100像素）
+		yDiff := elem.Center[1] - agreementY
+		if yDiff < 0 {
+			yDiff = -yDiff
+		}
+		if yDiff > 100 {
+			continue
+		}
+
+		// 检查元素大小（复选框通常是小元素）
+		width := elem.Bounds[2] - elem.Bounds[0]
+		height := elem.Bounds[3] - elem.Bounds[1]
+		if width > 200 || height > 200 {
+			continue
+		}
+
+		checkboxElem = elem
+		break
+	}
+
+	if checkboxElem != nil {
+		return &SingleStepAction{
+			Type:   "click",
+			X:      checkboxElem.Center[0],
+			Y:      checkboxElem.Center[1],
+			Reason: "点击协议复选框（必须先勾选才能继续）",
+		}
+	}
+
+	return nil
+}
+
+// formatUIElementsCompact 格式化UI元素（紧凑版）
+func (e *InteractionEngine) formatUIElementsCompact(uiData *UIData) string {
+	var lines []string
+
+	// 可点击元素（最多20个）
+	for i, elem := range uiData.ClickableElements {
+		if i >= 20 {
+			lines = append(lines, fmt.Sprintf("... 还有 %d 个元素", len(uiData.ClickableElements)-20))
+			break
+		}
+
+		text := elem.Label
+		if text == "" {
+			text = elem.Text
+		}
+
+		// 提取resource-id的最后部分
+		resID := ""
+		if elem.ResourceID != "" {
+			parts := strings.Split(elem.ResourceID, "/")
+			resID = parts[len(parts)-1]
+		}
+
+		line := fmt.Sprintf("%d. ", i+1)
+		if text != "" {
+			line += fmt.Sprintf("文本:\"%s\" ", text)
+		}
+		if resID != "" {
+			line += fmt.Sprintf("ID:%s ", resID)
+		}
+		line += fmt.Sprintf("坐标:(%d,%d)", elem.Center[0], elem.Center[1])
+
+		lines = append(lines, line)
+	}
+
+	// 输入框
+	if len(uiData.InputFields) > 0 {
+		lines = append(lines, "\n输入框:")
+		for i, input := range uiData.InputFields {
+			if i >= 5 {
+				break
+			}
+			hint := input.Text
+			if hint == "" {
+				hint = "(无提示)"
+			}
+			lines = append(lines, fmt.Sprintf("  - %s 坐标:(%d,%d)", hint, input.Center[0], input.Center[1]))
+		}
+	}
+
+	// 可滚动区域
+	if len(uiData.ScrollableViews) > 0 {
+		lines = append(lines, "\n页面可滚动")
+	}
+
+	if len(lines) == 0 {
+		return "(无可交互元素)"
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// parseSingleStepResponse 解析单步响应
+func (e *InteractionEngine) parseSingleStepResponse(response string) (*SingleStepAction, error) {
+	// 清理响应，提取JSON
+	response = strings.TrimSpace(response)
+
+	// 尝试提取JSON（可能被```包裹）
+	if strings.Contains(response, "```") {
+		re := regexp.MustCompile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
+		matches := re.FindStringSubmatch(response)
+		if len(matches) > 1 {
+			response = matches[1]
+		}
+	}
+
+	// 找到第一个 { 和最后一个 }
+	start := strings.Index(response, "{")
+	end := strings.LastIndex(response, "}")
+	if start >= 0 && end > start {
+		response = response[start : end+1]
+	}
+
+	var action SingleStepAction
+	if err := json.Unmarshal([]byte(response), &action); err != nil {
+		return nil, fmt.Errorf("JSON解析失败: %w, 原始响应: %s", err, response[:min(len(response), 200)])
+	}
+
+	// 验证type
+	validTypes := map[string]bool{"click": true, "scroll": true, "input": true, "none": true}
+	if !validTypes[action.Type] {
+		return nil, fmt.Errorf("无效的操作类型: %s", action.Type)
+	}
+
+	// 验证坐标（click类型）
+	if action.Type == "click" {
+		if action.X <= 0 || action.Y <= 0 || action.X > 1440 || action.Y > 3200 {
+			return nil, fmt.Errorf("无效的坐标: (%d, %d)", action.X, action.Y)
+		}
+	}
+
+	return &action, nil
+}
+
+// ============================================
+// AI交互循环主函数
+// ============================================
+
+// AILoopResult AI交互循环结果
+type AILoopResult struct {
+	TotalSteps      int                   // 总执行步数
+	SuccessSteps    int                   // 成功执行步数
+	ExitReason      string                // 退出原因
+	Actions         []*SingleStepAction   // 执行的操作列表
+	Errors          []string              // 错误列表
+}
+
+// UIDataProvider UI数据提供接口
+type UIDataProvider interface {
+	DumpUIHierarchy(ctx context.Context) (string, error)
+	TakeScreenshot(ctx context.Context, path string) error
+}
+
+// RunAIInteractionLoop 执行AI单步交互循环
+// 参数:
+//   - ctx: 上下文
+//   - executor: 动作执行器 (ADB客户端)
+//   - uiProvider: UI数据提供器
+//   - packageName: 目标应用包名
+//   - activityName: 当前Activity名称
+//   - maxSteps: 最大执行步数
+//
+// 返回:
+//   - AILoopResult: 循环执行结果
+func (e *InteractionEngine) RunAIInteractionLoop(
+	ctx context.Context,
+	executor ActionExecutor,
+	uiProvider UIDataProvider,
+	packageName string,
+	activityName string,
+	maxSteps int,
+) *AILoopResult {
+	result := &AILoopResult{
+		Actions: make([]*SingleStepAction, 0),
+		Errors:  make([]string, 0),
+	}
+
+	// 用于检测重复操作
+	var lastAction *SingleStepAction
+	sameActionCount := 0
+	noneCount := 0 // 连续none计数
+
+	e.logger.WithFields(logrus.Fields{
+		"package":    packageName,
+		"activity":   activityName,
+		"max_steps":  maxSteps,
+	}).Info("开始AI单步交互循环")
+
+	for step := 1; step <= maxSteps; step++ {
+		select {
+		case <-ctx.Done():
+			result.ExitReason = "上下文取消"
+			e.logger.Info("AI交互循环: 上下文取消")
+			return result
+		default:
+		}
+
+		e.logger.WithField("step", step).Info("AI交互循环: 开始新一步")
+
+		// 1. 检查当前是否在目标应用中
+		currentPkg, err := executor.GetForegroundPackage(ctx)
+		if err != nil {
+			e.logger.WithError(err).Warn("获取前台应用失败")
+			result.Errors = append(result.Errors, fmt.Sprintf("步骤%d: 获取前台应用失败: %v", step, err))
+			// 尝试恢复
+			if recoveryErr := e.recoverToApp(ctx, executor, packageName); recoveryErr != nil {
+				result.ExitReason = "应用恢复失败"
+				e.logger.WithError(recoveryErr).Error("AI交互循环: 应用恢复失败，退出")
+				return result
+			}
+			continue
+		}
+
+		if currentPkg != packageName {
+			e.logger.WithFields(logrus.Fields{
+				"current": currentPkg,
+				"target":  packageName,
+			}).Warn("不在目标应用中，尝试恢复")
+
+			if recoveryErr := e.recoverToApp(ctx, executor, packageName); recoveryErr != nil {
+				result.ExitReason = "应用恢复失败"
+				e.logger.WithError(recoveryErr).Error("AI交互循环: 应用恢复失败，退出")
+				return result
+			}
+			continue
+		}
+
+		// 2. 获取UI数据
+		uiXML, err := uiProvider.DumpUIHierarchy(ctx)
+		if err != nil {
+			e.logger.WithError(err).Warn("获取UI层级失败")
+			result.Errors = append(result.Errors, fmt.Sprintf("步骤%d: 获取UI层级失败: %v", step, err))
+			continue
+		}
+
+		// 3. 解析UI数据
+		uiData, err := ParseUIXMLContent(uiXML)
+		if err != nil {
+			e.logger.WithError(err).Warn("解析UI层级失败")
+			result.Errors = append(result.Errors, fmt.Sprintf("步骤%d: 解析UI层级失败: %v", step, err))
+			continue
+		}
+
+		// 4. 调用AI获取下一步操作（传递历史操作，避免重复）
+		action, err := e.PlanNextAction(ctx, uiData, activityName, step, maxSteps, result.Actions)
+		if err != nil {
+			e.logger.WithError(err).Warn("AI规划失败")
+			result.Errors = append(result.Errors, fmt.Sprintf("步骤%d: AI规划失败: %v", step, err))
+			continue
+		}
+
+		// 5. 检查是否为none（无操作）
+		if action.Type == "none" {
+			noneCount++
+			e.logger.WithFields(logrus.Fields{
+				"reason":     action.Reason,
+				"none_count": noneCount,
+			}).Info("AI返回none操作")
+
+			// 连续3次none，退出循环
+			if noneCount >= 3 {
+				result.ExitReason = "连续3次无可操作元素"
+				e.logger.Info("AI交互循环: 连续3次none，退出")
+				return result
+			}
+
+			// 等待一下再继续
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		// 重置none计数
+		noneCount = 0
+
+		// 6. 检查是否重复操作
+		if lastAction != nil && isSameAction(lastAction, action) {
+			sameActionCount++
+			e.logger.WithFields(logrus.Fields{
+				"action":     action.Type,
+				"same_count": sameActionCount,
+			}).Warn("检测到重复操作")
+
+			if sameActionCount >= 3 {
+				result.ExitReason = "连续3次相同操作"
+				e.logger.Info("AI交互循环: 重复操作过多，退出")
+				return result
+			}
+		} else {
+			sameActionCount = 0
+		}
+		lastAction = action
+
+		// 7. 执行操作
+		execErr := e.executeSingleStepAction(ctx, action, executor, packageName, activityName, uiXML)
+		if execErr != nil {
+			e.logger.WithError(execErr).Warn("执行操作失败")
+			result.Errors = append(result.Errors, fmt.Sprintf("步骤%d: 执行操作失败: %v", step, execErr))
+			// 不退出，继续下一步
+		} else {
+			result.SuccessSteps++
+		}
+
+		result.TotalSteps = step
+		result.Actions = append(result.Actions, action)
+
+		// 8. 等待页面稳定
+		time.Sleep(1500 * time.Millisecond)
+	}
+
+	result.ExitReason = "达到最大步数"
+	e.logger.WithField("max_steps", maxSteps).Info("AI交互循环: 达到最大步数，退出")
+	return result
+}
+
+// recoverToApp 尝试恢复到目标应用
+func (e *InteractionEngine) recoverToApp(ctx context.Context, executor ActionExecutor, packageName string) error {
+	// 尝试3次恢复
+	for attempt := 1; attempt <= 3; attempt++ {
+		e.logger.WithField("attempt", attempt).Info("尝试恢复到目标应用")
+
+		var err error
+		switch attempt {
+		case 1:
+			// 按返回键
+			err = executor.PressBack(ctx)
+		case 2:
+			// 再按返回键
+			err = executor.PressBack(ctx)
+		case 3:
+			// 通过monkey启动
+			_, err = executor.Shell(ctx, fmt.Sprintf("monkey -p %s -c android.intent.category.LAUNCHER 1", packageName))
+		}
+
+		if err != nil {
+			e.logger.WithError(err).Warn("恢复操作失败")
+			continue
+		}
+
+		time.Sleep(1 * time.Second)
+
+		// 检查是否恢复成功
+		currentPkg, err := executor.GetForegroundPackage(ctx)
+		if err == nil && currentPkg == packageName {
+			e.logger.Info("应用恢复成功")
+			return nil
+		}
+	}
+
+	return fmt.Errorf("恢复到应用 %s 失败", packageName)
+}
+
+// executeSingleStepAction 执行单步操作
+func (e *InteractionEngine) executeSingleStepAction(
+	ctx context.Context,
+	action *SingleStepAction,
+	executor ActionExecutor,
+	packageName string,
+	activityName string,
+	uiXML string,
+) error {
+	e.logger.WithFields(logrus.Fields{
+		"type":   action.Type,
+		"reason": action.Reason,
+		"x":      action.X,
+		"y":      action.Y,
+	}).Info("执行单步操作")
+
+	switch action.Type {
+	case "click":
+		// 安全检查
+		preCheck := e.PreCheckAction(Action{
+			Type: "click",
+			X:    action.X,
+			Y:    action.Y,
+		}, uiXML, packageName, 1080, 2340)
+
+		if !preCheck.Safe {
+			e.logger.WithField("reason", preCheck.Reason).Warn("点击操作被安全检查拦截")
+			return fmt.Errorf("操作被拦截: %s", preCheck.Reason)
+		}
+
+		// 执行点击
+		if err := executor.TapScreen(ctx, action.X, action.Y); err != nil {
+			return err
+		}
+
+		// 等待页面响应
+		time.Sleep(500 * time.Millisecond)
+
+		// 检查是否退出应用
+		currentPkg, err := executor.GetForegroundPackage(ctx)
+		if err == nil && currentPkg != packageName {
+			e.logger.WithField("current_pkg", currentPkg).Warn("点击后退出了应用，尝试恢复")
+			return e.recoverToApp(ctx, executor, packageName)
+		}
+
+	case "scroll":
+		direction := action.Direction
+		if direction == "" {
+			direction = "down"
+		}
+
+		var cmd string
+		switch direction {
+		case "down":
+			cmd = "input swipe 540 1500 540 500 300"
+		case "up":
+			cmd = "input swipe 540 500 540 1500 300"
+		case "left":
+			cmd = "input swipe 800 1000 200 1000 300"
+		case "right":
+			cmd = "input swipe 200 1000 800 1000 300"
+		default:
+			cmd = "input swipe 540 1500 540 500 300"
+		}
+
+		_, err := executor.Shell(ctx, cmd)
+		if err != nil {
+			return err
+		}
+
+	case "input":
+		// 先点击输入框
+		if err := executor.TapScreen(ctx, action.X, action.Y); err != nil {
+			return err
+		}
+		time.Sleep(500 * time.Millisecond)
+
+		// 输入文本
+		if action.Value != "" {
+			if err := executor.InputText(ctx, action.Value); err != nil {
+				return err
+			}
+		}
+
+	case "none":
+		// 无操作
+		return nil
+
+	default:
+		return fmt.Errorf("未知操作类型: %s", action.Type)
+	}
+
+	return nil
+}
+
+// isSameAction 判断两个操作是否相同
+func isSameAction(a, b *SingleStepAction) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
+	if a.Type != b.Type {
+		return false
+	}
+
+	switch a.Type {
+	case "click":
+		// 坐标相差小于50认为是同一个位置
+		return abs(a.X-b.X) < 50 && abs(a.Y-b.Y) < 50
+	case "scroll":
+		return a.Direction == b.Direction
+	case "input":
+		return a.Value == b.Value
+	default:
+		return true
+	}
+}
+
+// singleStepFallback 单步降级策略
+func (e *InteractionEngine) singleStepFallback(uiData *UIData) *SingleStepAction {
+	// 优先级关键词
+	priorityKeywords := []struct {
+		keywords []string
+		priority int
+	}{
+		{[]string{"open", "打开", "启动", "launch"}, 16},
+		{[]string{"同意", "agree", "允许", "allow", "确定", "ok", "accept", "继续", "continue", "我知道了", "知道了"}, 15},
+		{[]string{"跳过", "skip", "游客", "guest", "试用", "体验", "先逛逛", "暂不", "稀后", "later"}, 14},
+		{[]string{"搜索", "search", "刷新", "refresh", "分享", "share", "详情", "detail", "更多", "more", "查看", "view"}, 12},
+		{[]string{"首页", "home", "发现", "discover", "推荐", "我的", "mine", "消息", "message"}, 10},
+	}
+
+	// 禁止关键词
+	forbiddenKeywords := []string{
+		"拒绝", "deny", "不同意", "disagree", "取消", "cancel",
+		"退出", "exit", "返回", "back", "关闭", "close",
+		"登录", "login", "注册", "register", "signin", "signup",
+	}
+
+	var bestAction *SingleStepAction
+	bestPriority := -1
+
+	for _, elem := range uiData.ClickableElements {
+		combined := strings.ToLower(elem.Text + " " + elem.Label + " " + elem.ResourceID)
+
+		// 检查是否禁止
+		isForbidden := false
+		for _, kw := range forbiddenKeywords {
+			if strings.Contains(combined, kw) {
+				isForbidden = true
+				break
+			}
+		}
+		if isForbidden {
+			continue
+		}
+
+		// 检查优先级
+		for _, p := range priorityKeywords {
+			for _, kw := range p.keywords {
+				if strings.Contains(combined, kw) {
+					if p.priority > bestPriority {
+						bestPriority = p.priority
+						text := elem.Label
+						if text == "" {
+							text = elem.Text
+						}
+						bestAction = &SingleStepAction{
+							Type:   "click",
+							X:      elem.Center[0],
+							Y:      elem.Center[1],
+							Reason: fmt.Sprintf("降级策略: 点击 %s", text),
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// 如果没有找到高优先级按钮，尝试滚动
+	if bestAction == nil && len(uiData.ScrollableViews) > 0 {
+		return &SingleStepAction{
+			Type:      "scroll",
+			Direction: "down",
+			Reason:    "降级策略: 向下滚动",
+		}
+	}
+
+	// 如果还是没有，返回none
+	if bestAction == nil {
+		return &SingleStepAction{
+			Type:   "none",
+			Reason: "降级策略: 无可操作元素",
+		}
+	}
+
+	return bestAction
+}

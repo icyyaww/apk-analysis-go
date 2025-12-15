@@ -130,6 +130,9 @@ type Task struct {
 	StaticAnalysisCompleted  bool `gorm:"default:false" json:"static_analysis_completed"`
 	DynamicAnalysisCompleted bool `gorm:"default:false" json:"dynamic_analysis_completed"`
 
+	// 应用特征标记
+	LoginRequired bool `gorm:"default:false" json:"login_required"` // 应用是否需要强制登录
+
 	// 关联 (使用指针避免循环依赖)
 	Activities     *TaskActivity       `gorm:"foreignKey:TaskID;references:ID" json:"activities,omitempty"`
 	StaticReport   *TaskStaticReport   `gorm:"foreignKey:TaskID;references:ID" json:"static_report,omitempty"`
