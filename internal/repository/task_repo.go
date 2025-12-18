@@ -42,6 +42,10 @@ type TaskRepository interface {
 	GetRetryCount(ctx context.Context, id string) (int, error)
 	// 更新应用特征标记
 	UpdateLoginRequired(ctx context.Context, id string, loginRequired bool) error
+	// 获取各状态任务数量统计（使用数据库聚合查询）
+	GetStatusCounts(ctx context.Context) (map[string]int64, int64, error)
+	// 获取任务列表（支持排除指定状态）
+	ListWithExcludeStatus(ctx context.Context, page int, pageSize int, excludeStatus string) ([]*domain.Task, int64, error)
 }
 
 type taskRepo struct {
@@ -698,4 +702,92 @@ func (r *taskRepo) UpdateLoginRequired(ctx context.Context, id string, loginRequ
 	}).Info("✅ Login required flag updated")
 
 	return nil
+}
+
+// GetStatusCounts 获取各状态任务数量统计（使用数据库聚合查询）
+// 返回: statusCounts map, totalCount, error
+func (r *taskRepo) GetStatusCounts(ctx context.Context) (map[string]int64, int64, error) {
+	type StatusCount struct {
+		Status string
+		Count  int64
+	}
+
+	var results []StatusCount
+	err := r.db.WithContext(ctx).
+		Model(&domain.Task{}).
+		Select("status, COUNT(*) as count").
+		Group("status").
+		Scan(&results).Error
+
+	if err != nil {
+		r.logger.WithError(err).Error("Failed to get status counts")
+		return nil, 0, err
+	}
+
+	// 初始化所有状态计数为 0
+	statusCounts := map[string]int64{
+		"queued":     0,
+		"installing": 0,
+		"running":    0,
+		"collecting": 0,
+		"completed":  0,
+		"failed":     0,
+		"cancelled":  0,
+	}
+
+	var total int64
+	for _, r := range results {
+		statusCounts[r.Status] = r.Count
+		total += r.Count
+	}
+
+	return statusCounts, total, nil
+}
+
+// ListWithExcludeStatus 获取任务列表（支持排除指定状态）
+// 在数据库层面直接排除指定状态，避免内存过滤导致数据不足
+func (r *taskRepo) ListWithExcludeStatus(ctx context.Context, page int, pageSize int, excludeStatus string) ([]*domain.Task, int64, error) {
+	var tasks []*domain.Task
+	var total int64
+
+	// 构建基础查询
+	baseQuery := r.db.WithContext(ctx).Model(&domain.Task{})
+	if excludeStatus != "" {
+		baseQuery = baseQuery.Where("status != ?", excludeStatus)
+	}
+
+	// 统计符合条件的总数
+	if err := baseQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 计算偏移量
+	offset := (page - 1) * pageSize
+
+	// 查询当前页数据（按状态优先级排序：running > installing > collecting > completed > failed > queued）
+	query := r.db.WithContext(ctx)
+	if excludeStatus != "" {
+		query = query.Where("status != ?", excludeStatus)
+	}
+
+	err := query.
+		Preload("StaticReport", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "url_count", "domain_count", "analysis_mode")
+		}).
+		Preload("DomainAnalysis", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "primary_domain_json", "domain_beian_json", "app_domains_json")
+		}).
+		Preload("AppDomains", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "domain", "ip", "province", "city", "isp", "source")
+		}).
+		Preload("Activities", func(db *gorm.DB) *gorm.DB {
+			return db.Select("task_id", "activity_details_json")
+		}).
+		// 按状态优先级排序，然后按完成时间倒序（最新完成的在前）
+		Order("CASE status WHEN 'running' THEN 1 WHEN 'installing' THEN 2 WHEN 'collecting' THEN 3 WHEN 'completed' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END, completed_at DESC, created_at DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&tasks).Error
+
+	return tasks, total, err
 }

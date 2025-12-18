@@ -28,7 +28,7 @@ func NewClient(apiKey string, logger *logrus.Logger) *Client {
 	return &Client{
 		apiKey:  apiKey,
 		baseURL: "https://open.bigmodel.cn/api/paas/v4",
-		model:   "GLM-4.5-Flash", // 智谱 GLM-4.5-Flash 模型
+		model:   "glm-4v-flash", // 智谱 glm-4v-flash 模型
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
@@ -129,10 +129,9 @@ func (c *Client) AnalyzeScreenshot(ctx context.Context, screenshotPath string) (
 
 请只返回 JSON，不要添加其他说明文字。`
 
-	// 3. 构建请求
+	// 3. 构建请求 (glm-4v-flash 不支持 thinking 参数)
 	reqBody := ChatRequest{
-		Model:    c.model,
-		Thinking: &ThinkingConfig{Type: "disabled"}, // 禁用深度思考，加快响应速度
+		Model: c.model,
 		Messages: []Message{
 			{
 				Role: "user",
@@ -189,6 +188,13 @@ func (c *Client) sendChatRequest(ctx context.Context, reqBody ChatRequest) (*Cha
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
+
+	// 调试：打印请求内容（截断图片数据）
+	debugData := string(jsonData)
+	if len(debugData) > 500 {
+		debugData = debugData[:500] + "...(truncated)"
+	}
+	c.logger.WithField("request_preview", debugData).Info("Sending chat request to GLM API")
 
 	url := fmt.Sprintf("%s/chat/completions", c.baseURL)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
@@ -267,10 +273,9 @@ type SuggestedAction struct {
 func (c *Client) AnalyzeText(ctx context.Context, prompt string) (string, error) {
 	c.logger.WithField("model", c.model).Debug("Analyzing text with GLM-4-Flash")
 
-	// 构建请求
+	// 构建请求 (glm-4v-flash 不支持 thinking 参数)
 	reqBody := ChatRequest{
-		Model:    c.model,
-		Thinking: &ThinkingConfig{Type: "disabled"}, // 禁用深度思考，加快响应速度
+		Model: c.model,
 		Messages: []Message{
 			{
 				Role: "user",

@@ -272,9 +272,9 @@ func formatList(items []string) string {
 
 // callAI 调用AI API
 func (e *InteractionEngine) callAI(ctx context.Context, prompt string) (string, error) {
-	// 使用 GLM-4.5-Flash 模型，禁用深度思考以加快响应
+	// 使用 glm-4v-flash 模型，禁用深度思考以加快响应
 	reqBody := ChatRequest{
-		Model:    "GLM-4.5-Flash",
+		Model:    "glm-4v-flash",
 		Thinking: &ThinkingConfig{Type: "disabled"},
 		Messages: []Message{
 			{

@@ -355,8 +355,8 @@ func main() {
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		ReadTimeout:  10 * time.Minute, // 10分钟，支持大文件上传
+		WriteTimeout: 5 * time.Minute,  // 5分钟，支持大文件下载
 		IdleTimeout:  120 * time.Second,
 	}
 

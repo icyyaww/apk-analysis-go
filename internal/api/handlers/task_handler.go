@@ -60,17 +60,24 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		pageSize = 100
 	}
 
-	// 如果有任何过滤条件，查询更多数据以确保能返回足够的结果
-	queryLimit := pageSize
-	hasFilter := statusFilter != "" || excludeStatus != "" || provinceFilter != "" || ispFilter != "" || beianStatusFilter != ""
-	if hasFilter {
-		queryLimit = pageSize * 10 // 查询10倍数量，确保过滤后有足够数据
+	// 判断是否有额外过滤条件（省份、ISP、备案状态）
+	hasExtraFilter := statusFilter != "" || provinceFilter != "" || ispFilter != "" || beianStatusFilter != ""
+
+	var tasks []*domain.Task
+	var total int64
+
+	if hasExtraFilter {
+		// 有额外过滤条件时，查询更多数据再在内存中过滤
+		queryLimit := pageSize * 10
 		if queryLimit > 1000 {
-			queryLimit = 1000 // 最多查1000条
+			queryLimit = 1000
 		}
+		tasks, _, err = h.taskService.ListTasksWithExcludeStatus(c.Request.Context(), 1, queryLimit, excludeStatus)
+	} else {
+		// 仅有 exclude_status 时，使用数据库分页
+		tasks, total, err = h.taskService.ListTasksWithExcludeStatus(c.Request.Context(), page, pageSize, excludeStatus)
 	}
 
-	tasks, _, err := h.taskService.ListTasksWithPagination(c.Request.Context(), 1, queryLimit)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to list tasks")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -79,127 +86,111 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		return
 	}
 
-	// 根据多种条件过滤任务
+	// 如果有额外过滤条件，需要在内存中过滤
 	var filteredTasks []*domain.Task
-	for _, task := range tasks {
-		// 1. 任务状态过滤
-		if statusFilter != "" && string(task.Status) != statusFilter {
-			continue
-		}
-		if excludeStatus != "" && string(task.Status) == excludeStatus {
-			continue
-		}
+	if hasExtraFilter {
+		for _, task := range tasks {
+			// 1. 任务状态过滤
+			if statusFilter != "" && string(task.Status) != statusFilter {
+				continue
+			}
 
-		// 2. 域名归属地过滤（省份、ISP）
-		if provinceFilter != "" || ispFilter != "" {
-			matched := false
-			if len(task.AppDomains) > 0 {
-				for _, appDomain := range task.AppDomains {
-					provinceMatch := provinceFilter == "" || appDomain.Province == provinceFilter
-					ispMatch := ispFilter == "" || strings.Contains(appDomain.ISP, ispFilter)
+			// 2. 域名归属地过滤（省份、ISP）
+			if provinceFilter != "" || ispFilter != "" {
+				matched := false
+				if len(task.AppDomains) > 0 {
+					for _, appDomain := range task.AppDomains {
+						provinceMatch := provinceFilter == "" || appDomain.Province == provinceFilter
+						ispMatch := ispFilter == "" || strings.Contains(appDomain.ISP, ispFilter)
 
-					if provinceMatch && ispMatch {
-						matched = true
-						break
+						if provinceMatch && ispMatch {
+							matched = true
+							break
+						}
 					}
 				}
-			}
-			if !matched {
-				continue
-			}
-		}
-
-		// 3. 备案状态过滤
-		if beianStatusFilter != "" {
-			if task.DomainAnalysis == nil || task.DomainAnalysis.DomainBeianJSON == "" {
-				// 没有备案数据，跳过
-				continue
-			}
-
-			// 解析备案信息（可能是数组格式 [{...}] 或单个对象 {...}）
-			var beianList []map[string]interface{}
-			var beianSingle map[string]interface{}
-
-			// 尝试解析为数组
-			if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianList); err != nil {
-				// 尝试解析为单个对象
-				if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianSingle); err != nil {
+				if !matched {
 					continue
 				}
-				beianList = []map[string]interface{}{beianSingle}
 			}
 
-			// 如果没有备案数据，跳过
-			if len(beianList) == 0 {
-				continue
-			}
+			// 3. 备案状态过滤
+			if beianStatusFilter != "" {
+				if task.DomainAnalysis == nil || task.DomainAnalysis.DomainBeianJSON == "" {
+					continue
+				}
 
-			// 获取第一个备案记录的状态
-			status := ""
-			if statusVal, ok := beianList[0]["status"].(string); ok {
-				status = statusVal
-			}
+				var beianList []map[string]interface{}
+				var beianSingle map[string]interface{}
 
-			// 获取 info.reason 用于区分 "未备案" 和 "查询失败"
-			reason := ""
-			if info, ok := beianList[0]["info"].(map[string]interface{}); ok {
-				if reasonVal, ok := info["reason"].(string); ok {
-					reason = reasonVal
+				if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianList); err != nil {
+					if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianSingle); err != nil {
+						continue
+					}
+					beianList = []map[string]interface{}{beianSingle}
+				}
+
+				if len(beianList) == 0 {
+					continue
+				}
+
+				status := ""
+				if statusVal, ok := beianList[0]["status"].(string); ok {
+					status = statusVal
+				}
+
+				reason := ""
+				if info, ok := beianList[0]["info"].(map[string]interface{}); ok {
+					if reasonVal, ok := info["reason"].(string); ok {
+						reason = reasonVal
+					}
+				}
+
+				matched := false
+				switch beianStatusFilter {
+				case "已备案":
+					matched = status == "registered" || status == "ok" || status == "已备案"
+				case "未备案":
+					matched = (status == "error" && strings.Contains(reason, "暂无数据")) || status == "not_found" || status == "未备案"
+				case "查询失败":
+					matched = (status == "error" && !strings.Contains(reason, "暂无数据")) || status == "查询失败"
+				default:
+					matched = status == beianStatusFilter
+				}
+
+				if !matched {
+					continue
 				}
 			}
 
-			// 匹配备案状态
-			// beian_status可能的值: "已备案"、"未备案"、"查询失败"
-			// 注意：数据库中 "未备案" 和 "查询失败" 都存储为 status="error"
-			// 需要通过 info.reason 来区分：reason 包含 "暂无数据" 表示未备案
-			matched := false
-			switch beianStatusFilter {
-			case "已备案":
-				matched = status == "registered" || status == "ok" || status == "已备案"
-			case "未备案":
-				// 未备案：status=error 且 reason 包含 "暂无数据"
-				matched = (status == "error" && strings.Contains(reason, "暂无数据")) || status == "not_found" || status == "未备案"
-			case "查询失败":
-				// 查询失败：status=error 且 reason 不包含 "暂无数据"
-				matched = (status == "error" && !strings.Contains(reason, "暂无数据")) || status == "查询失败"
-			default:
-				// 直接匹配status字段（支持 registered、error 等原始值）
-				matched = status == beianStatusFilter
-			}
-
-			if !matched {
-				continue
-			}
+			filteredTasks = append(filteredTasks, task)
 		}
 
-		filteredTasks = append(filteredTasks, task)
+		// 手动分页
+		startIdx := (page - 1) * pageSize
+		endIdx := startIdx + pageSize
+		if startIdx >= len(filteredTasks) {
+			startIdx = len(filteredTasks)
+		}
+		if endIdx > len(filteredTasks) {
+			endIdx = len(filteredTasks)
+		}
+		tasks = filteredTasks[startIdx:endIdx]
+		total = int64(len(filteredTasks))
 	}
 
-	// 手动分页：从过滤后的结果中取指定页的数据
-	startIdx := (page - 1) * pageSize
-	endIdx := startIdx + pageSize
-	if startIdx >= len(filteredTasks) {
-		startIdx = len(filteredTasks)
-	}
-	if endIdx > len(filteredTasks) {
-		endIdx = len(filteredTasks)
-	}
-	paginatedTasks := filteredTasks[startIdx:endIdx]
-
-	// 转换为响应格式 (添加 CST 时间字段)
-	taskList := make([]map[string]interface{}, len(paginatedTasks))
-	for i, task := range paginatedTasks {
+	// 转换为响应格式
+	taskList := make([]map[string]interface{}, len(tasks))
+	for i, task := range tasks {
 		taskList[i] = h.taskToResponse(task)
 	}
 
-	// 计算总页数（基于过滤后的数量）
-	filteredTotal := int64(len(filteredTasks))
-	totalPages := (filteredTotal + int64(pageSize) - 1) / int64(pageSize)
+	// 计算总页数
+	totalPages := (total + int64(pageSize) - 1) / int64(pageSize)
 
-	// 返回分页信息
 	c.JSON(http.StatusOK, gin.H{
 		"tasks":       taskList,
-		"total":       filteredTotal,
+		"total":       total,
 		"page":        page,
 		"page_size":   pageSize,
 		"total_pages": totalPages,
@@ -407,30 +398,19 @@ func (h *TaskHandler) GetActivityURLs(c *gin.Context) {
 
 // GetSystemStats 获取系统统计信息
 // GET /api/stats
+// 使用数据库聚合查询统计各状态任务数量，避免只统计部分数据的问题
 func (h *TaskHandler) GetSystemStats(c *gin.Context) {
-	tasks, _ := h.taskService.ListTasks(c.Request.Context(), 1000)
-
-	stats := map[string]interface{}{
-		"total_tasks": len(tasks),
-		"status_breakdown": map[string]int{
-			"queued":     0,
-			"installing": 0,
-			"running":    0,
-			"collecting": 0,
-			"completed":  0,
-			"failed":     0,
-			"cancelled":  0,
-		},
+	statusCounts, total, err := h.taskService.GetStatusCounts(c.Request.Context())
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get status counts")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取统计信息失败"})
+		return
 	}
 
-	for _, task := range tasks {
-		statusKey := string(task.Status)
-		if count, ok := stats["status_breakdown"].(map[string]int); ok {
-			count[statusKey]++
-		}
-	}
-
-	c.JSON(http.StatusOK, stats)
+	c.JSON(http.StatusOK, gin.H{
+		"total_tasks":      total,
+		"status_breakdown": statusCounts,
+	})
 }
 
 // taskToResponse 将 Task 模型转换为响应格式

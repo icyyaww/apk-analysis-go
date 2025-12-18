@@ -39,6 +39,12 @@ type TaskService interface {
 
 	// 更新任务进度
 	UpdateTaskProgress(ctx context.Context, taskID string, step string, percent int) error
+
+	// 获取任务状态统计（使用数据库聚合查询）
+	GetStatusCounts(ctx context.Context) (map[string]int64, int64, error)
+
+	// 获取任务列表（支持排除指定状态）
+	ListTasksWithExcludeStatus(ctx context.Context, page int, pageSize int, excludeStatus string) ([]*domain.Task, int64, error)
 }
 
 type taskService struct {
@@ -174,4 +180,12 @@ func (s *taskService) UpdateTaskProgress(ctx context.Context, taskID string, ste
 		return fmt.Errorf("更新任务进度失败: %w", err)
 	}
 	return nil
+}
+
+func (s *taskService) GetStatusCounts(ctx context.Context) (map[string]int64, int64, error) {
+	return s.taskRepo.GetStatusCounts(ctx)
+}
+
+func (s *taskService) ListTasksWithExcludeStatus(ctx context.Context, page int, pageSize int, excludeStatus string) ([]*domain.Task, int64, error) {
+	return s.taskRepo.ListWithExcludeStatus(ctx, page, pageSize, excludeStatus)
 }

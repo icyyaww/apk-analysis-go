@@ -79,8 +79,11 @@ func NewOrchestrator(
 	resultsDir string,
 	mitmProxyHost string,
 ) *Orchestrator {
-	// AI 分析器从环境变量初始化
-	glmAPIKey := os.Getenv("GLM_API_KEY")
+	// AI 分析器从配置文件初始化，如果配置为空则尝试环境变量
+	glmAPIKey := cfg.AI.APIKey
+	if glmAPIKey == "" {
+		glmAPIKey = os.Getenv("GLM_API_KEY")
+	}
 	aiAnalyzer := ai.NewAnalyzer(glmAPIKey, logger)
 
 	// 检查静态分析配置 (只使用 Hybrid 分析器)
@@ -107,8 +110,8 @@ func NewOrchestrator(
 		}
 	}
 
-	// AI智能交互初始化
-	aiInteractionEnabled := os.Getenv("AI_INTERACTION_ENABLED") == "true"
+	// AI智能交互初始化 - 从配置文件读取
+	aiInteractionEnabled := cfg.AI.Enabled
 	var interactionEngine *ai.InteractionEngine
 
 	// SmartClicker 始终初始化（不依赖AI，使用UI Automator解析XML）
@@ -119,11 +122,13 @@ func NewOrchestrator(
 	if aiInteractionEnabled {
 		if glmAPIKey != "" {
 			interactionEngine = ai.NewInteractionEngine(glmAPIKey, logger)
-			logger.Info("✅ AI smart interaction enabled (GLM-4V)")
+			logger.WithField("model", cfg.AI.Model).Info("✅ AI smart interaction enabled (GLM-4V)")
 		} else {
-			logger.Warn("⚠️ AI_INTERACTION_ENABLED=true but GLM_API_KEY not set, disabling AI interaction")
+			logger.Warn("⚠️ ai.enabled=true but api_key not set, disabling AI interaction")
 			aiInteractionEnabled = false
 		}
+	} else {
+		logger.Info("ℹ️ AI smart interaction disabled in config (ai.enabled=false)")
 	}
 
 	logger.WithFields(logrus.Fields{
