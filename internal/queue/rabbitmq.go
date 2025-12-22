@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -11,11 +12,12 @@ import (
 
 // RabbitMQConfig RabbitMQ 配置
 type RabbitMQConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	VHost    string
+	Host      string
+	Port      int
+	User      string
+	Password  string
+	VHost     string
+	Heartbeat time.Duration // 心跳间隔，默认 10 秒
 }
 
 // RabbitMQ RabbitMQ 客户端
@@ -28,6 +30,12 @@ type RabbitMQ struct {
 	reconnect     chan bool
 	maxRetries    int
 	prefetchCount int // 预取数量，应与 worker 数量匹配
+
+	// 连接状态管理
+	mu            sync.RWMutex
+	closed        bool
+	connNotify    chan *amqp.Error
+	channelNotify chan *amqp.Error
 }
 
 // NewRabbitMQ 创建 RabbitMQ 客户端
@@ -41,13 +49,20 @@ func NewRabbitMQWithPrefetch(config *RabbitMQConfig, queueName string, prefetchC
 	if prefetchCount <= 0 {
 		prefetchCount = 1
 	}
+
+	// 设置默认心跳间隔
+	if config.Heartbeat == 0 {
+		config.Heartbeat = 10 * time.Second
+	}
+
 	mq := &RabbitMQ{
 		config:        config,
 		logger:        logger,
 		queueName:     queueName,
-		reconnect:     make(chan bool, 1),
+		reconnect:     make(chan bool, 10), // 增大缓冲区，避免信号丢失
 		maxRetries:    10,
 		prefetchCount: prefetchCount,
+		closed:        false,
 	}
 
 	if err := mq.connect(); err != nil {
@@ -59,6 +74,9 @@ func NewRabbitMQWithPrefetch(config *RabbitMQConfig, queueName string, prefetchC
 
 // connect 建立连接
 func (mq *RabbitMQ) connect() error {
+	mq.mu.Lock()
+	defer mq.mu.Unlock()
+
 	// 构建连接 URL
 	url := fmt.Sprintf("amqp://%s:%s@%s:%d/%s",
 		mq.config.User,
@@ -68,8 +86,11 @@ func (mq *RabbitMQ) connect() error {
 		mq.config.VHost,
 	)
 
-	// 连接 RabbitMQ
-	conn, err := amqp.Dial(url)
+	// 使用 DialConfig 配置心跳参数
+	conn, err := amqp.DialConfig(url, amqp.Config{
+		Heartbeat: mq.config.Heartbeat, // 心跳间隔（默认 10 秒）
+		Locale:    "en_US",
+	})
 	if err != nil {
 		return fmt.Errorf("failed to dial: %w", err)
 	}
@@ -89,7 +110,6 @@ func (mq *RabbitMQ) connect() error {
 		conn.Close()
 		return fmt.Errorf("failed to set QoS: %w", err)
 	}
-	mq.logger.WithField("prefetch_count", mq.prefetchCount).Info("RabbitMQ QoS configured")
 
 	// 声明队列
 	_, err = ch.QueueDeclare(
@@ -106,32 +126,92 @@ func (mq *RabbitMQ) connect() error {
 		return fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	mq.logger.WithFields(logrus.Fields{
-		"host":  mq.config.Host,
-		"port":  mq.config.Port,
-		"queue": mq.queueName,
-	}).Info("Connected to RabbitMQ")
+	// 设置 Connection 和 Channel 关闭通知
+	mq.connNotify = make(chan *amqp.Error, 1)
+	mq.channelNotify = make(chan *amqp.Error, 1)
+	mq.conn.NotifyClose(mq.connNotify)
+	mq.channel.NotifyClose(mq.channelNotify)
 
-	// 监听连接错误
-	go mq.watchConnection()
+	mq.logger.WithFields(logrus.Fields{
+		"host":           mq.config.Host,
+		"port":           mq.config.Port,
+		"queue":          mq.queueName,
+		"heartbeat":      mq.config.Heartbeat,
+		"prefetch_count": mq.prefetchCount,
+	}).Info("Connected to RabbitMQ")
 
 	return nil
 }
 
-// watchConnection 监听连接状态
-func (mq *RabbitMQ) watchConnection() {
-	closeErr := make(chan *amqp.Error)
-	mq.conn.NotifyClose(closeErr)
+// StartConnectionWatcher 启动连接监听器（持续监听，直到主动关闭）
+// 同时监听 Connection 和 Channel 关闭事件
+func (mq *RabbitMQ) StartConnectionWatcher() {
+	go func() {
+		for {
+			mq.mu.RLock()
+			if mq.closed {
+				mq.mu.RUnlock()
+				mq.logger.Info("Connection watcher stopped: RabbitMQ client closed")
+				return
+			}
+			connNotify := mq.connNotify
+			channelNotify := mq.channelNotify
+			mq.mu.RUnlock()
 
-	err := <-closeErr
-	if err != nil {
-		mq.logger.WithError(err).Error("RabbitMQ connection closed")
-		mq.reconnect <- true
+			// 等待任一关闭事件
+			select {
+			case err, ok := <-connNotify:
+				if !ok {
+					// Channel 已关闭，检查是否主动关闭
+					mq.mu.RLock()
+					closed := mq.closed
+					mq.mu.RUnlock()
+					if closed {
+						return
+					}
+				}
+				if err != nil {
+					mq.logger.WithError(err).Error("RabbitMQ connection closed unexpectedly")
+				} else {
+					mq.logger.Warn("RabbitMQ connection closed")
+				}
+				mq.triggerReconnect()
+
+			case err, ok := <-channelNotify:
+				if !ok {
+					mq.mu.RLock()
+					closed := mq.closed
+					mq.mu.RUnlock()
+					if closed {
+						return
+					}
+				}
+				if err != nil {
+					mq.logger.WithError(err).Error("RabbitMQ channel closed unexpectedly")
+				} else {
+					mq.logger.Warn("RabbitMQ channel closed")
+				}
+				mq.triggerReconnect()
+			}
+		}
+	}()
+}
+
+// triggerReconnect 触发重连信号（非阻塞）
+func (mq *RabbitMQ) triggerReconnect() {
+	select {
+	case mq.reconnect <- true:
+		mq.logger.Debug("Reconnect signal sent")
+	default:
+		mq.logger.Debug("Reconnect signal already pending")
 	}
 }
 
 // Reconnect 重新连接
 func (mq *RabbitMQ) Reconnect() error {
+	// 先关闭旧连接（忽略错误）
+	mq.closeConnections()
+
 	retries := 0
 	for retries < mq.maxRetries {
 		mq.logger.Infof("Attempting to reconnect to RabbitMQ (attempt %d/%d)", retries+1, mq.maxRetries)
@@ -148,6 +228,21 @@ func (mq *RabbitMQ) Reconnect() error {
 	}
 
 	return fmt.Errorf("failed to reconnect after %d attempts", mq.maxRetries)
+}
+
+// closeConnections 关闭现有连接（不设置 closed 标志）
+func (mq *RabbitMQ) closeConnections() {
+	mq.mu.Lock()
+	defer mq.mu.Unlock()
+
+	if mq.channel != nil {
+		mq.channel.Close()
+		mq.channel = nil
+	}
+	if mq.conn != nil {
+		mq.conn.Close()
+		mq.conn = nil
+	}
 }
 
 // Publish 发布消息
@@ -209,6 +304,10 @@ func (mq *RabbitMQ) GetQueueStats() (messageCount, consumerCount int, err error)
 
 // Close 关闭连接
 func (mq *RabbitMQ) Close() error {
+	mq.mu.Lock()
+	mq.closed = true
+	mq.mu.Unlock()
+
 	if mq.channel != nil {
 		if err := mq.channel.Close(); err != nil {
 			mq.logger.WithError(err).Error("Failed to close channel")
@@ -223,6 +322,11 @@ func (mq *RabbitMQ) Close() error {
 
 	mq.logger.Info("RabbitMQ connection closed")
 	return nil
+}
+
+// GetReconnectChan 获取重连信号通道
+func (mq *RabbitMQ) GetReconnectChan() <-chan bool {
+	return mq.reconnect
 }
 
 // IsConnected 检查连接状态

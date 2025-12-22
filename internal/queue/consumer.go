@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -15,11 +17,16 @@ type TaskHandler func(ctx context.Context, msg *TaskMessage) error
 
 // Consumer 消息消费者
 type Consumer struct {
-	mq         *RabbitMQ
-	logger     *logrus.Logger
-	handler    TaskHandler
-	workerPool int
-	stopChan   chan struct{}
+	mq            *RabbitMQ
+	logger        *logrus.Logger
+	handler       TaskHandler
+	workerPool    int
+	stopChan      chan struct{}
+	workerWg      sync.WaitGroup
+	activeWorkers int32
+	mu            sync.Mutex
+	running       bool
+	cancelFunc    context.CancelFunc // 用于取消当前所有 worker
 }
 
 // NewConsumer 创建消费者
@@ -33,26 +40,47 @@ func NewConsumer(mq *RabbitMQ, handler TaskHandler, workerPool int, logger *logr
 		logger:     logger,
 		handler:    handler,
 		workerPool: workerPool,
-		stopChan:   make(chan struct{}),
+		stopChan:   make(chan struct{}, 1), // 有缓冲，避免阻塞
+		running:    false,
 	}
 }
 
 // Start 启动消费者
 func (c *Consumer) Start(ctx context.Context) error {
+	c.mu.Lock()
+	if c.running {
+		c.mu.Unlock()
+		c.logger.Warn("Consumer already running, skipping start")
+		return nil
+	}
+	c.running = true
+	c.mu.Unlock()
+
 	c.logger.Infof("Starting consumer with %d workers", c.workerPool)
 
 	// 获取消息通道
 	msgs, err := c.mq.Consume()
 	if err != nil {
+		c.mu.Lock()
+		c.running = false
+		c.mu.Unlock()
 		return fmt.Errorf("failed to start consuming: %w", err)
 	}
 
+	// 创建可取消的 context
+	workerCtx, cancel := context.WithCancel(ctx)
+	c.cancelFunc = cancel
+
 	// 启动多个 worker goroutine
 	for i := 0; i < c.workerPool; i++ {
-		go c.worker(ctx, i, msgs)
+		c.workerWg.Add(1)
+		go c.worker(workerCtx, i, msgs)
 	}
 
 	c.logger.Info("Consumer started successfully")
+
+	// 启动连接监听器
+	c.mq.StartConnectionWatcher()
 
 	// 监听重连信号
 	go c.handleReconnect(ctx)
@@ -62,12 +90,16 @@ func (c *Consumer) Start(ctx context.Context) error {
 
 // worker 工作协程
 func (c *Consumer) worker(ctx context.Context, id int, msgs <-chan amqp.Delivery) {
+	defer c.workerWg.Done()
+	atomic.AddInt32(&c.activeWorkers, 1)
+	defer atomic.AddInt32(&c.activeWorkers, -1)
+
 	c.logger.Infof("Worker %d started", id)
 
 	for {
 		select {
 		case <-ctx.Done():
-			c.logger.Infof("Worker %d stopped", id)
+			c.logger.Infof("Worker %d stopped by context", id)
 			return
 		case <-c.stopChan:
 			c.logger.Infof("Worker %d stopped by signal", id)
@@ -133,29 +165,95 @@ func (c *Consumer) handleReconnect(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-c.mq.reconnect:
+		case _, ok := <-c.mq.GetReconnectChan():
+			if !ok {
+				c.logger.Info("Reconnect channel closed, stopping reconnect handler")
+				return
+			}
+
 			c.logger.Warn("Connection lost, attempting to reconnect...")
 
+			// 停止当前所有 worker
+			c.stopWorkers()
+
+			// 尝试重连
 			if err := c.mq.Reconnect(); err != nil {
-				c.logger.WithError(err).Error("Failed to reconnect")
+				c.logger.WithError(err).Error("Failed to reconnect, will retry on next signal")
 				continue
 			}
 
 			// 重新启动消费
-			if err := c.Start(ctx); err != nil {
+			if err := c.restart(ctx); err != nil {
 				c.logger.WithError(err).Error("Failed to restart consumer")
 			}
 		}
 	}
 }
 
+// stopWorkers 停止所有 worker（等待当前任务完成）
+func (c *Consumer) stopWorkers() {
+	c.mu.Lock()
+	if c.cancelFunc != nil {
+		c.cancelFunc()
+		c.cancelFunc = nil
+	}
+	c.running = false
+	c.mu.Unlock()
+
+	// 等待所有 worker 退出（最多等待 30 秒）
+	done := make(chan struct{})
+	go func() {
+		c.workerWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		c.logger.Info("All workers stopped gracefully")
+	case <-time.After(30 * time.Second):
+		c.logger.Warn("Timeout waiting for workers to stop")
+	}
+}
+
+// restart 内部重启方法（重连后调用）
+func (c *Consumer) restart(ctx context.Context) error {
+	c.mu.Lock()
+	c.running = false // 重置状态，允许 Start 继续
+	c.mu.Unlock()
+
+	return c.Start(ctx)
+}
+
 // Stop 停止消费者
 func (c *Consumer) Stop() {
 	c.logger.Info("Stopping consumer...")
-	close(c.stopChan)
+
+	c.mu.Lock()
+	if c.cancelFunc != nil {
+		c.cancelFunc()
+	}
+	c.running = false
+	c.mu.Unlock()
+
+	// 发送停止信号
+	select {
+	case c.stopChan <- struct{}{}:
+	default:
+	}
+
+	// 等待所有 worker 退出
+	c.workerWg.Wait()
+	c.logger.Info("Consumer stopped")
 }
 
 // GetActiveWorkers 获取活跃 worker 数量
 func (c *Consumer) GetActiveWorkers() int {
-	return c.workerPool
+	return int(atomic.LoadInt32(&c.activeWorkers))
+}
+
+// IsRunning 检查消费者是否正在运行
+func (c *Consumer) IsRunning() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.running
 }

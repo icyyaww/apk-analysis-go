@@ -23,7 +23,7 @@ func main() {
 		cfg.Database.Password,
 		cfg.Database.Host,
 		cfg.Database.Port,
-		cfg.Database.Database,
+		cfg.Database.DBName,
 	)
 
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{
@@ -33,8 +33,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// 迁移 TaskMobSFReport 表
-	if err := db.AutoMigrate(&domain.TaskMobSFReport{}); err != nil {
+	// 迁移所有表
+	if err := db.AutoMigrate(
+		&domain.Task{},
+		&domain.TaskActivity{},
+		&domain.TaskStaticReport{},
+		&domain.TaskDomainAnalysis{},
+		&domain.TaskAppDomain{},
+		&domain.TaskAILog{},
+		&domain.ThirdPartySDKRule{},
+	); err != nil {
 		log.Fatalf("Failed to migrate: %v", err)
 	}
 
