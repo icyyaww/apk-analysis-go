@@ -42,6 +42,10 @@ type TaskStaticReport struct {
 	MD5          string `gorm:"type:varchar(32)" json:"md5,omitempty"`
 	SHA256       string `gorm:"type:varchar(64)" json:"sha256,omitempty"`
 
+	// 开发者信息（从签名证书提取）
+	Developer   string `gorm:"type:varchar(500)" json:"developer,omitempty"`   // 开发者/签名者 (CN)
+	CompanyName string `gorm:"type:varchar(500)" json:"company_name,omitempty"` // 公司/组织名称 (O)
+
 	// 组件统计
 	ActivityCount   int `gorm:"default:0" json:"activity_count"`
 	ServiceCount    int `gorm:"default:0" json:"service_count"`

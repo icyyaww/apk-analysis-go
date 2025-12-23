@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mozillazg/go-pinyin"
 	"github.com/sirupsen/logrus"
 )
 
@@ -29,12 +30,14 @@ func (da *DomainAnalyzer) AnalyzePrimaryDomain(
 	ctx context.Context,
 	packageName string,
 	apkName string,
+	appName string, // 新增：应用名称（用于拼音匹配）
 	dynamicURLs []string,
 	staticURLs []string,
 ) *PrimaryDomainResult {
 	da.logger.WithFields(logrus.Fields{
 		"package_name":  packageName,
 		"apk_name":      apkName,
+		"app_name":      appName,
 		"dynamic_urls":  len(dynamicURLs),
 		"static_urls":   len(staticURLs),
 	}).Info("🔍🔍🔍 DomainAnalyzer.AnalyzePrimaryDomain 开始执行")
@@ -42,6 +45,7 @@ func (da *DomainAnalyzer) AnalyzePrimaryDomain(
 	da.logger.WithFields(logrus.Fields{
 		"package_name":  packageName,
 		"apk_name":      apkName,
+		"app_name":      appName,
 		"dynamic_urls":  len(dynamicURLs),
 		"static_urls":   len(staticURLs),
 	}).Info("Analyzing primary domain")
@@ -51,9 +55,9 @@ func (da *DomainAnalyzer) AnalyzePrimaryDomain(
 	domainDetails := da.buildDomainDetails(dynamicURLs, staticURLs)
 	da.logger.WithField("domain_count", len(domainDetails)).Info("✅ [Analyzer步骤1] 域名详情构建完成")
 
-	// 2. 计算每个域名的得分（传入 packageName 和 apkName）
+	// 2. 计算每个域名的得分（传入 packageName、apkName 和 appName）
 	da.logger.Info("🎯 [Analyzer步骤2] 计算每个域名的得分...")
-	candidates := da.scoreDomains(ctx, domainDetails, packageName, apkName)
+	candidates := da.scoreDomains(ctx, domainDetails, packageName, apkName, appName)
 	da.logger.WithField("candidates_count", len(candidates)).Info("✅ [Analyzer步骤2] 域名评分完成")
 
 	// 3. 选择最高分域名
@@ -384,6 +388,7 @@ func (da *DomainAnalyzer) scoreDomains(
 	domainDetails map[string]*DomainDetails,
 	packageName string,
 	apkName string,
+	appName string, // 新增：应用名称（用于拼音匹配）
 ) []DomainCandidate {
 	candidates := make([]DomainCandidate, 0, len(domainDetails))
 
@@ -471,9 +476,9 @@ func (da *DomainAnalyzer) scoreDomains(
 			SDKPenalty:     sdkPenalty, // 保持为0
 		}
 
-		// 1. 包名/APK名匹配 (0-15分，优先APK文件名，其次包名)
+		// 1. 包名/APK名/应用名匹配 (0-15分，优先APK文件名，其次包名，再次应用名拼音)
 		// 🔧 评分优化：降低包名权重，提升其他特征权重，使无包名匹配的主域名也能获得高置信度
-		packageScore := da.calculatePackageMatchScore(detail.Domain, packageName, apkName)
+		packageScore := da.calculatePackageMatchScore(detail.Domain, packageName, apkName, appName)
 		// 将原25分缩放到15分
 		packageScore = packageScore * 15.0 / 25.0
 		candidate.PackageScore = packageScore
@@ -541,9 +546,10 @@ func (da *DomainAnalyzer) scoreDomains(
 	return candidates
 }
 
-// calculatePackageMatchScore 计算包名/APK名匹配分数 (0-25分)
+// calculatePackageMatchScore 计算包名/APK名/应用名匹配分数 (0-25分)
 // 🔧 修复Bug：优先匹配包名核心关键词（倒数第一个部分），避免.css等误匹配
-func (da *DomainAnalyzer) calculatePackageMatchScore(domain, packageName, apkName string) float64 {
+// 🔧 增强：支持应用名称拼音匹配（如 "广投一账通" -> "gtyzt" 匹配 gtyztpt.com）
+func (da *DomainAnalyzer) calculatePackageMatchScore(domain, packageName, apkName, appName string) float64 {
 	// 通用词汇黑名单（这些词在域名中很常见，不应该匹配）
 	commonWords := map[string]bool{
 		"com": true, "cn": true, "net": true, "org": true,
@@ -730,6 +736,131 @@ func (da *DomainAnalyzer) calculatePackageMatchScore(domain, packageName, apkNam
 			}
 			if score > bestMatch {
 				bestMatch = score
+			}
+		}
+	}
+
+	// 3. 🔧 新增：应用名称拼音匹配（如 "广投一账通" -> "gtyzt" 匹配 gtyztpt.com）
+	// 如果已经有很高的匹配分数（>= 22），跳过拼音匹配
+	if bestMatch < 22.0 && appName != "" {
+		appPinyins := da.getPinyinVariations(appName)
+		for _, py := range appPinyins {
+			// 拼音至少2个字符才有意义
+			if len(py) < 2 {
+				continue
+			}
+
+			// 检查域名主要部分是否包含应用名拼音
+			if strings.Contains(domainMain, py) {
+				score := 22.0 // 拼音匹配给 22 分（略低于完全匹配的 25 分）
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"pinyin":      py,
+						"score":       score,
+						"match_type":  "App name pinyin match",
+					}).Debug("Domain matched via app name pinyin")
+				}
+				break // 找到匹配就退出
+			}
+
+			// 也检查完整域名（包含子域名的情况）
+			if strings.Contains(domainLower, py) && bestMatch < 20.0 {
+				score := 20.0 // 完整域名匹配给 20 分
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"pinyin":      py,
+						"score":       score,
+						"match_type":  "App name pinyin match (full domain)",
+					}).Debug("Domain matched via app name pinyin (full domain)")
+				}
+			}
+		}
+	}
+
+	// 4. 🔧 新增：域名拼音缩写反推匹配
+	// 场景：包名 hglife，域名 huaguilife
+	// 逻辑：从域名提取拼音首字母缩写，与包名对比
+	// 例如：huaguilife -> huagui(hg) + life -> hglife 匹配包名
+	if bestMatch < 20.0 && len(priorityParts) > 0 {
+		// 从域名中提取拼音缩写 + 英文的组合
+		domainAbbrev := da.extractPinyinAbbrevFromDomain(domainMain)
+		if domainAbbrev != "" {
+			// 检查包名各部分是否与域名缩写匹配
+			for idx, part := range priorityParts {
+				partLower := strings.ToLower(part)
+				if partLower == domainAbbrev || strings.Contains(partLower, domainAbbrev) || strings.Contains(domainAbbrev, partLower) {
+					score := 20.0 - float64(idx)*2.0
+					if score < 15.0 {
+						score = 15.0
+					}
+					if score > bestMatch {
+						bestMatch = score
+						da.logger.WithFields(logrus.Fields{
+							"domain":        domain,
+							"domain_main":   domainMain,
+							"domain_abbrev": domainAbbrev,
+							"package_part":  part,
+							"score":         score,
+							"match_type":    "Domain pinyin abbreviation match",
+						}).Debug("Domain matched via pinyin abbreviation expansion")
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// 5. 🔧 新增：应用名称前缀拼音匹配
+	// 场景：应用名"国金证券全能行"，域名 gjzq.com.cn
+	// 逻辑：提取应用名称前N个汉字的拼音首字母，与域名匹配
+	// 例如：国金证券全能行 -> 前4字"国金证券" -> gjzq -> 匹配 gjzq.com.cn
+	if bestMatch < 20.0 && appName != "" {
+		prefixPinyins := da.getAppNamePrefixPinyinVariations(appName)
+		for _, py := range prefixPinyins {
+			// 拼音至少2个字符才有意义
+			if len(py) < 2 {
+				continue
+			}
+
+			// 检查域名主要部分是否以应用名前缀拼音开头或完全匹配
+			if domainMain == py || strings.HasPrefix(domainMain, py) {
+				score := 21.0 // 前缀匹配给 21 分
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"pinyin":      py,
+						"score":       score,
+						"match_type":  "App name prefix pinyin match",
+					}).Debug("Domain matched via app name prefix pinyin")
+				}
+				break
+			}
+
+			// 也检查域名是否包含前缀拼音
+			if strings.Contains(domainMain, py) && bestMatch < 19.0 {
+				score := 19.0
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"pinyin":      py,
+						"score":       score,
+						"match_type":  "App name prefix pinyin contains match",
+					}).Debug("Domain contains app name prefix pinyin")
+				}
 			}
 		}
 	}
@@ -1065,4 +1196,281 @@ func (r *PrimaryDomainResult) String() string {
 		return "No primary domain identified"
 	}
 	return fmt.Sprintf("%s (confidence: %.2f)", r.PrimaryDomain, r.Confidence)
+}
+
+// getPinyinVariations 获取文本的拼音变体
+// 返回: [完整拼音, 首字母缩写] 如 "广投一账通" -> ["guangtouyizhangtong", "gtyzt"]
+func (da *DomainAnalyzer) getPinyinVariations(text string) []string {
+	if text == "" {
+		return nil
+	}
+
+	// 过滤非中文字符，只保留中文
+	var chineseChars []rune
+	for _, r := range text {
+		if r >= 0x4e00 && r <= 0x9fff {
+			chineseChars = append(chineseChars, r)
+		}
+	}
+
+	if len(chineseChars) == 0 {
+		// 没有中文，返回原文（转小写）
+		return []string{strings.ToLower(text)}
+	}
+
+	chineseText := string(chineseChars)
+
+	// 配置拼音转换参数
+	pinyinArgs := pinyin.NewArgs()
+	pinyinArgs.Style = pinyin.Normal // 普通风格（无声调）
+
+	// 获取拼音
+	pinyinResult := pinyin.Pinyin(chineseText, pinyinArgs)
+
+	variations := make(map[string]bool)
+
+	// 1. 完整拼音拼接（如 "广投一账通" -> "guangtouyizhangtong"）
+	var fullPinyin strings.Builder
+	for _, py := range pinyinResult {
+		if len(py) > 0 {
+			fullPinyin.WriteString(py[0])
+		}
+	}
+	if fullPinyin.Len() > 0 {
+		variations[fullPinyin.String()] = true
+	}
+
+	// 2. 首字母缩写（如 "广投一账通" -> "gtyzt"）
+	var initials strings.Builder
+	for _, py := range pinyinResult {
+		if len(py) > 0 && len(py[0]) > 0 {
+			initials.WriteByte(py[0][0])
+		}
+	}
+	if initials.Len() > 0 {
+		variations[initials.String()] = true
+	}
+
+	// 转换为切片返回
+	result := make([]string, 0, len(variations))
+	for v := range variations {
+		result = append(result, v)
+	}
+
+	return result
+}
+
+// extractPinyinAbbrevFromDomain 从域名中提取拼音缩写形式
+// 例如：huaguilife -> hglife (huagui 是拼音，提取首字母 hg；life 是英文，保留)
+// 返回域名的缩写形式，用于与包名匹配
+func (da *DomainAnalyzer) extractPinyinAbbrevFromDomain(domain string) string {
+	if domain == "" {
+		return ""
+	}
+
+	domain = strings.ToLower(domain)
+
+	// 常见的完整拼音列表（用于识别域名中的拼音部分）
+	// 这些是常见的单字拼音，用于分词
+	pinyinSyllables := []string{
+		// 按长度降序排列，优先匹配长拼音
+		"zhuang", "chuang", "shuang", "xiong", "qiong",
+		"zhang", "zheng", "zhong", "zhuai", "zhuan", "chuai", "chuan", "cheng", "chong",
+		"shang", "sheng", "shuai", "shuan", "shuan",
+		"xiang", "xiang", "xuang", "jiong", "qiang", "qiong",
+		"niang", "liang", "guang", "kuang", "huang",
+		"zhai", "zhao", "zhen", "zhou", "zhua", "zhui", "zhun", "zhuo",
+		"chai", "chao", "chen", "chou", "chua", "chui", "chun", "chuo",
+		"shai", "shao", "shen", "shou", "shua", "shui", "shun", "shuo",
+		"xian", "xiao", "xing", "xuan",
+		"jian", "jiao", "jing", "juan", "jian",
+		"qian", "qiao", "qing", "quan",
+		"nian", "niao", "ning", "nuan",
+		"lian", "liao", "ling", "luan",
+		"guan", "guai", "gang", "geng", "gong", "guan",
+		"kuan", "kuai", "kang", "keng", "kong",
+		"huan", "huai", "hang", "heng", "hong",
+		"bang", "beng", "bing", "biao",
+		"pang", "peng", "ping", "piao",
+		"mang", "meng", "ming", "miao", "mian",
+		"fang", "feng", "fiao",
+		"dang", "deng", "ding", "dong", "dian", "diao", "duan",
+		"tang", "teng", "ting", "tong", "tian", "tiao", "tuan",
+		"nang", "neng", "ning", "nong",
+		"lang", "leng", "ling", "long",
+		"zang", "zeng", "zong", "zuan",
+		"cang", "ceng", "cong", "cuan",
+		"sang", "seng", "song", "suan",
+		"rang", "reng", "rong", "ruan",
+		"yang", "ying", "yong", "yuan",
+		"wang", "weng", "wong",
+		"ang", "eng", "ong",
+		"zha", "zhe", "zhi", "zhu", "zai", "zao", "zei", "zen", "zou", "zui", "zun", "zuo",
+		"cha", "che", "chi", "chu", "cai", "cao", "cen", "cou", "cui", "cun", "cuo",
+		"sha", "she", "shi", "shu", "sai", "sao", "sen", "sou", "sui", "sun", "suo",
+		"xia", "xie", "xin", "xiu", "xue", "xun",
+		"jia", "jie", "jin", "jiu", "jue", "jun",
+		"qia", "qie", "qin", "qiu", "que", "qun",
+		"nia", "nie", "nin", "niu", "nue",
+		"lia", "lie", "lin", "liu", "lue", "lun",
+		"gua", "guo", "gui", "gun", "gai", "gao", "gei", "gen", "gou",
+		"kua", "kuo", "kui", "kun", "kai", "kao", "ken", "kou",
+		"hua", "huo", "hui", "hun", "hai", "hao", "hei", "hen", "hou",
+		"bai", "bao", "bei", "ben", "bie", "bin", "bia", "bao", "bou",
+		"pai", "pao", "pei", "pen", "pie", "pin", "pou",
+		"mai", "mao", "mei", "men", "mie", "min", "miu", "mou",
+		"fei", "fen", "fou",
+		"dai", "dao", "dei", "den", "die", "diu", "dou", "duo", "dui", "dun",
+		"tai", "tao", "tei", "tie", "tou", "tuo", "tui", "tun",
+		"nai", "nao", "nei", "nen", "nie", "niu", "nou", "nuo",
+		"lai", "lao", "lei", "lie", "liu", "lou", "luo", "lun",
+		"zai", "zao", "zei", "zen", "zou", "zuo", "zui", "zun",
+		"cai", "cao", "cen", "cou", "cuo", "cui", "cun",
+		"sai", "sao", "sen", "sou", "suo", "sui", "sun",
+		"rai", "rao", "ren", "rou", "ruo", "rui", "run",
+		"yao", "you", "yan", "yin", "yue", "yun",
+		"wai", "wei", "wen", "wan",
+		"za", "ze", "zi", "zu",
+		"ca", "ce", "ci", "cu",
+		"sa", "se", "si", "su",
+		"re", "ri", "ru",
+		"ya", "ye", "yi", "yo", "yu",
+		"wa", "wo", "wu",
+		"ba", "bo", "bi", "bu",
+		"pa", "po", "pi", "pu",
+		"ma", "mo", "mi", "mu", "me",
+		"fa", "fo", "fu",
+		"da", "de", "di", "du",
+		"ta", "te", "ti", "tu",
+		"na", "ne", "ni", "nu",
+		"la", "le", "li", "lu", "lv",
+		"ga", "ge", "gu",
+		"ka", "ke", "ku",
+		"ha", "he", "hu",
+		"ai", "ao", "an", "en", "er", "ou",
+		"a", "o", "e",
+	}
+
+	// 常见英文单词（不应被拆分为拼音）
+	commonEnglishWords := map[string]bool{
+		"life": true, "live": true, "love": true, "link": true,
+		"app": true, "api": true, "web": true, "net": true,
+		"pay": true, "buy": true, "shop": true, "mall": true,
+		"bank": true, "fund": true, "cash": true, "coin": true,
+		"game": true, "play": true, "news": true, "info": true,
+		"data": true, "tech": true, "soft": true, "code": true,
+		"cloud": true, "smart": true, "plus": true, "pro": true,
+		"go": true, "to": true, "in": true, "on": true, "up": true,
+		"one": true, "two": true, "max": true, "mini": true,
+		"home": true, "work": true, "team": true, "user": true,
+		"open": true, "free": true, "fast": true, "easy": true,
+		"best": true, "good": true, "cool": true, "nice": true,
+		"big": true, "top": true, "new": true, "old": true,
+		"hot": true, "red": true, "blue": true, "green": true,
+	}
+
+	var result strings.Builder
+	remaining := domain
+
+	for len(remaining) > 0 {
+		matched := false
+
+		// 1. 先尝试匹配英文单词（优先保留）
+		for word := range commonEnglishWords {
+			if strings.HasPrefix(remaining, word) {
+				result.WriteString(word)
+				remaining = remaining[len(word):]
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+
+		// 2. 尝试匹配拼音音节
+		for _, syllable := range pinyinSyllables {
+			if strings.HasPrefix(remaining, syllable) {
+				// 拼音音节只取首字母
+				result.WriteByte(syllable[0])
+				remaining = remaining[len(syllable):]
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+
+		// 3. 无法匹配，保留当前字符并继续
+		result.WriteByte(remaining[0])
+		remaining = remaining[1:]
+	}
+
+	abbrev := result.String()
+
+	// 如果缩写和原域名相同，说明没有拼音部分，返回空
+	if abbrev == domain {
+		return ""
+	}
+
+	return abbrev
+}
+
+// getAppNamePrefixPinyinVariations 获取应用名称前缀的拼音变体
+// 从应用名称中提取前2、3、4...N个汉字的拼音首字母
+// 例如："国金证券全能行" -> ["gj", "gjz", "gjzq", "gjzqq", "gjzqqn", "gjzqqnx"]
+// 这样可以匹配到 gjzq.com.cn (国金证券)
+func (da *DomainAnalyzer) getAppNamePrefixPinyinVariations(appName string) []string {
+	if appName == "" {
+		return nil
+	}
+
+	// 过滤非中文字符，只保留中文
+	var chineseChars []rune
+	for _, r := range appName {
+		if r >= 0x4e00 && r <= 0x9fff {
+			chineseChars = append(chineseChars, r)
+		}
+	}
+
+	if len(chineseChars) < 2 {
+		return nil
+	}
+
+	// 配置拼音转换参数
+	pinyinArgs := pinyin.NewArgs()
+	pinyinArgs.Style = pinyin.Normal
+
+	// 获取所有汉字的拼音
+	chineseText := string(chineseChars)
+	pinyinResult := pinyin.Pinyin(chineseText, pinyinArgs)
+
+	if len(pinyinResult) < 2 {
+		return nil
+	}
+
+	// 生成不同长度的前缀拼音首字母
+	// 从2个字符开始，到全部汉字
+	variations := make([]string, 0)
+
+	var initials strings.Builder
+	for i, py := range pinyinResult {
+		if len(py) > 0 && len(py[0]) > 0 {
+			initials.WriteByte(py[0][0])
+		}
+
+		// 从第2个字符开始记录（至少2个字符的缩写才有意义）
+		if i >= 1 {
+			variations = append(variations, initials.String())
+		}
+	}
+
+	// 按长度降序排列，优先匹配长的前缀（更精确）
+	// 例如：gjzq 比 gj 更精确
+	for i, j := 0, len(variations)-1; i < j; i, j = i+1, j-1 {
+		variations[i], variations[j] = variations[j], variations[i]
+	}
+
+	return variations
 }

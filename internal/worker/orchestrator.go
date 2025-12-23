@@ -1898,6 +1898,9 @@ func (o *Orchestrator) saveStaticAnalysisResult(ctx context.Context, taskID stri
 		domainCount = len(result.DeepAnalysis.Domains)
 	}
 
+	// 从证书中提取开发者和公司信息
+	developer, companyName := o.extractCertificateInfo(result.DeepAnalysis)
+
 	// 构建报告对象
 	now := time.Now()
 	report := &domain.TaskStaticReport{
@@ -1912,6 +1915,8 @@ func (o *Orchestrator) saveStaticAnalysisResult(ctx context.Context, taskID stri
 		FileSize:               result.BasicInfo.FileSize,
 		MD5:                    result.BasicInfo.MD5,
 		SHA256:                 result.BasicInfo.SHA256,
+		Developer:              developer,
+		CompanyName:            companyName,
 		ActivityCount:          result.BasicInfo.ActivityCount,
 		ServiceCount:           result.BasicInfo.ServiceCount,
 		ReceiverCount:          result.BasicInfo.ReceiverCount,
@@ -1989,4 +1994,95 @@ func (o *Orchestrator) launchApp(ctx context.Context, packageName string, adbCli
 	}
 
 	return nil
+}
+
+// extractCertificateInfo 从深度分析结果中提取开发者和公司信息
+// Python 脚本直接返回 developer 和 company 字段
+func (o *Orchestrator) extractCertificateInfo(deepAnalysis *staticanalysis.DeepAnalysisResult) (developer, companyName string) {
+	if deepAnalysis == nil || deepAnalysis.Certificates == nil {
+		return "", ""
+	}
+
+	// 优先使用 Python 脚本直接返回的 developer 和 company 字段
+	if devVal, ok := deepAnalysis.Certificates["developer"]; ok {
+		if dev, ok := devVal.(string); ok && dev != "" {
+			developer = dev
+		}
+	}
+
+	if compVal, ok := deepAnalysis.Certificates["company"]; ok {
+		if comp, ok := compVal.(string); ok && comp != "" {
+			companyName = comp
+		}
+	}
+
+	// 如果直接字段为空，回退到解析 subject 字符串
+	if developer == "" || companyName == "" {
+		if subjectVal, ok := deepAnalysis.Certificates["subject"]; ok {
+			if subject, ok := subjectVal.(string); ok && subject != "" {
+				if developer == "" {
+					developer = o.extractRDNValue(subject, "Common Name")
+					if developer == "" {
+						developer = o.extractRDNValue(subject, "CN")
+					}
+				}
+				if companyName == "" {
+					companyName = o.extractRDNValue(subject, "Organization")
+					if companyName == "" {
+						companyName = o.extractRDNValue(subject, "O")
+					}
+				}
+			}
+		}
+	}
+
+	o.logger.WithFields(logrus.Fields{
+		"developer":    developer,
+		"company_name": companyName,
+	}).Debug("Extracted certificate info")
+
+	return developer, companyName
+}
+
+// extractRDNValue 从证书 subject 字符串中提取指定字段的值
+// 支持格式: "Common Name: value, Organization: value" 或 "CN=value,O=value"
+func (o *Orchestrator) extractRDNValue(dn, rdnType string) string {
+	// 尝试 "Key: Value" 格式 (asn1crypto human_friendly)
+	colonPrefix := rdnType + ": "
+	if idx := strings.Index(dn, colonPrefix); idx != -1 {
+		start := idx + len(colonPrefix)
+		end := strings.Index(dn[start:], ", ")
+		if end == -1 {
+			return strings.TrimSpace(dn[start:])
+		}
+		return strings.TrimSpace(dn[start : start+end])
+	}
+
+	// 尝试 "Key=Value" 格式 (RFC4514)
+	equalPrefix := rdnType + "="
+	if idx := strings.Index(dn, equalPrefix); idx != -1 {
+		start := idx + len(equalPrefix)
+		if start >= len(dn) {
+			return ""
+		}
+		// 找到值的结束位置（未转义的逗号或字符串结尾）
+		var value strings.Builder
+		escaped := false
+		for i := start; i < len(dn); i++ {
+			ch := dn[i]
+			if escaped {
+				value.WriteByte(ch)
+				escaped = false
+			} else if ch == '\\' {
+				escaped = true
+			} else if ch == ',' {
+				break
+			} else {
+				value.WriteByte(ch)
+			}
+		}
+		return strings.TrimSpace(value.String())
+	}
+
+	return ""
 }

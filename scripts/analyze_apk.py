@@ -196,13 +196,41 @@ def deep_analyze(apk_path):
     try:
         certs = apk.get_certificates()
         if certs and len(certs) > 0:
-            cert = apk.get_certificate(certs[0])
+            cert = certs[0]  # asn1crypto.x509.Certificate 对象
+
+            # 解析 subject 获取 CN (开发者) 和 O (公司)
+            subject_dict = {}
+            issuer_dict = {}
+
+            # 从 subject 提取字段
+            if hasattr(cert, 'subject') and cert.subject:
+                for rdn in cert.subject.chosen:
+                    for attr in rdn:
+                        attr_type = attr['type'].human_friendly
+                        attr_value = attr['value'].native
+                        subject_dict[attr_type] = attr_value
+
+            # 从 issuer 提取字段
+            if hasattr(cert, 'issuer') and cert.issuer:
+                for rdn in cert.issuer.chosen:
+                    for attr in rdn:
+                        attr_type = attr['type'].human_friendly
+                        attr_value = attr['value'].native
+                        issuer_dict[attr_type] = attr_value
+
             result["certificates"] = {
-                "subject": cert.subject.rfc4514_string(),
-                "issuer": cert.issuer.rfc4514_string(),
-                "serial": str(cert.serial_number),
-                "not_before": cert.not_valid_before.isoformat() if hasattr(cert, 'not_valid_before') else "",
-                "not_after": cert.not_valid_after.isoformat() if hasattr(cert, 'not_valid_after') else "",
+                "subject": cert.subject.human_friendly if hasattr(cert.subject, 'human_friendly') else "",
+                "issuer": cert.issuer.human_friendly if hasattr(cert.issuer, 'human_friendly') else "",
+                "serial": str(cert.serial_number) if hasattr(cert, 'serial_number') else "",
+                "not_before": cert.not_valid_before.isoformat() if hasattr(cert, 'not_valid_before') and cert.not_valid_before else "",
+                "not_after": cert.not_valid_after.isoformat() if hasattr(cert, 'not_valid_after') and cert.not_valid_after else "",
+                # 直接提供解析后的字段，方便 Go 端使用
+                "developer": subject_dict.get("Common Name", ""),
+                "company": subject_dict.get("Organization", ""),
+                "organization_unit": subject_dict.get("Organizational Unit", ""),
+                "country": subject_dict.get("Country", ""),
+                "state": subject_dict.get("State/Province", ""),
+                "locality": subject_dict.get("Locality", ""),
             }
     except Exception as e:
         result["certificates"] = {}  # 静默错误，避免污染 JSON 输出

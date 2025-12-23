@@ -46,9 +46,17 @@ func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMoni
 	fileHandler := handlers.NewFileHandler(taskService, logger, "./results", "./inbound_apks")
 	sdkHandler := handlers.NewSDKHandler(sdkRepo, logger)
 	certHandler := handlers.NewCertHandler(cfg.ADB.Target, logger)
+	authHandler := handlers.NewAuthHandler(logger)
 	// aiInteractionHandler 已在main.go中创建并传入，直接使用
 
-	// HTML 页面
+	// 登录页面（无需认证）
+	r.GET("/login", func(c *gin.Context) {
+		c.HTML(200, "login.html", gin.H{
+			"title": "登录 - APK Analysis Platform",
+		})
+	})
+
+	// HTML 页面（需要认证，但认证在前端 JS 处理）
 	r.GET("/", func(c *gin.Context) {
 		c.HTML(200, "dashboard.html", gin.H{
 			"title": "APK Analysis Dashboard",
@@ -91,13 +99,19 @@ func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMoni
 	// API v1
 	v1 := r.Group("/api")
 	{
-		// 健康检查
+		// 健康检查（无需认证）
 		v1.GET("/health", func(c *gin.Context) {
 			c.JSON(200, gin.H{
 				"status":  "ok",
 				"version": "1.0.0",
 			})
 		})
+
+		// 登录接口（无需认证）
+		v1.POST("/login", authHandler.Login)
+
+		// Token 验证接口（无需认证，用于前端检查 token 有效性）
+		v1.GET("/auth/validate", authHandler.ValidateToken)
 
 		// 系统统计
 		v1.GET("/stats", taskHandler.GetSystemStats)

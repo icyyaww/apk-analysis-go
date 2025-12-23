@@ -161,17 +161,18 @@ func (TaskActivity) TableName() string {
 
 // TaskDomainAnalysis 域名分析表
 type TaskDomainAnalysis struct {
-	ID                 uint       `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskID             string     `gorm:"type:varchar(36);uniqueIndex:uk_task_id;not null" json:"task_id"`
-	PrimaryDomain      string     `gorm:"type:varchar(255)" json:"primary_domain,omitempty"`
-	PrimaryDomainJSON  string     `gorm:"type:longtext" json:"primary_domain_json,omitempty"`
-	DomainBeianStatus  string     `gorm:"type:varchar(50)" json:"domain_beian_status,omitempty"`
-	DomainBeianJSON    string     `gorm:"type:longtext" json:"domain_beian_json,omitempty"`
-	AppDomainsJSON     string     `gorm:"type:longtext" json:"app_domains_json,omitempty"`
-	URLAnalysisStatic  string     `gorm:"type:mediumtext" json:"url_analysis_static,omitempty"`
-	URLAnalysisDynamic string     `gorm:"type:mediumtext" json:"url_analysis_dynamic,omitempty"`
-	AnalyzedAt         *time.Time `json:"analyzed_at,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
+	ID                    uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	TaskID                string     `gorm:"type:varchar(36);uniqueIndex:uk_task_id;not null" json:"task_id"`
+	PrimaryDomain         string     `gorm:"type:varchar(255)" json:"primary_domain,omitempty"`
+	PrimaryDomainJSON     string     `gorm:"type:longtext" json:"primary_domain_json,omitempty"`
+	DomainBeianStatus     string     `gorm:"type:varchar(50)" json:"domain_beian_status,omitempty"`
+	DomainBeianJSON       string     `gorm:"type:longtext" json:"domain_beian_json,omitempty"`
+	AppDomainsJSON        string     `gorm:"type:longtext" json:"app_domains_json,omitempty"`
+	URLAnalysisStatic     string     `gorm:"type:mediumtext" json:"url_analysis_static,omitempty"`
+	URLAnalysisDynamic    string     `gorm:"type:mediumtext" json:"url_analysis_dynamic,omitempty"`
+	URLClassificationJSON string     `gorm:"type:longtext" json:"url_classification_json,omitempty"` // 新增：URL分类结果
+	AnalyzedAt            *time.Time `json:"analyzed_at,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
 }
 
 func (TaskDomainAnalysis) TableName() string {

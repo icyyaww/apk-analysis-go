@@ -20,27 +20,29 @@ const forceRebuild = "v2024-11-20-FINAL-TEST-WITH-CHINESE-LOGS-12345"
 
 // AnalysisService 域名分析服务
 type AnalysisService struct {
-	analyzer   *DomainAnalyzer
-	beian      *BeianChecker
-	ipLocation *IPLocationClient
-	sdkManager *SDKManager
-	taskRepo   repository.TaskRepository
-	db         *gorm.DB
-	logger     *logrus.Logger
-	resultsDir string // 🔧 添加 resultsDir 字段用于正确读取 flows.jsonl
+	analyzer      *DomainAnalyzer
+	beian         *BeianChecker
+	ipLocation    *IPLocationClient
+	sdkManager    *SDKManager
+	urlClassifier *URLClassifier // 新增：URL 分类器
+	taskRepo      repository.TaskRepository
+	db            *gorm.DB
+	logger        *logrus.Logger
+	resultsDir    string // 🔧 添加 resultsDir 字段用于正确读取 flows.jsonl
 }
 
 // NewAnalysisService 创建域名分析服务
 func NewAnalysisService(db *gorm.DB, taskRepo repository.TaskRepository, logger *logrus.Logger) *AnalysisService {
 	sdkManager := NewSDKManager(db, logger)
 	return &AnalysisService{
-		analyzer:   NewDomainAnalyzer(logger, sdkManager),
-		beian:      NewBeianChecker(logger), // 使用默认配置(禁用)
-		ipLocation: NewIPLocationClient(logger),
-		sdkManager: sdkManager,
-		taskRepo:   taskRepo,
-		db:         db,
-		logger:     logger,
+		analyzer:      NewDomainAnalyzer(logger, sdkManager),
+		beian:         NewBeianChecker(logger), // 使用默认配置(禁用)
+		ipLocation:    NewIPLocationClient(logger),
+		sdkManager:    sdkManager,
+		urlClassifier: NewURLClassifier(logger, sdkManager), // 新增
+		taskRepo:      taskRepo,
+		db:            db,
+		logger:        logger,
 	}
 }
 
@@ -48,14 +50,15 @@ func NewAnalysisService(db *gorm.DB, taskRepo repository.TaskRepository, logger 
 func NewAnalysisServiceWithConfig(db *gorm.DB, taskRepo repository.TaskRepository, logger *logrus.Logger, beianConfig *BeianCheckerConfig, resultsDir string) *AnalysisService {
 	sdkManager := NewSDKManager(db, logger)
 	return &AnalysisService{
-		analyzer:   NewDomainAnalyzer(logger, sdkManager),
-		beian:      NewBeianCheckerWithConfig(logger, beianConfig),
-		ipLocation: NewIPLocationClient(logger),
-		sdkManager: sdkManager,
-		taskRepo:   taskRepo,
-		db:         db,
-		logger:     logger,
-		resultsDir: resultsDir, // 🔧 传入 resultsDir 用于读取 flows.jsonl
+		analyzer:      NewDomainAnalyzer(logger, sdkManager),
+		beian:         NewBeianCheckerWithConfig(logger, beianConfig),
+		ipLocation:    NewIPLocationClient(logger),
+		sdkManager:    sdkManager,
+		urlClassifier: NewURLClassifier(logger, sdkManager), // 新增
+		taskRepo:      taskRepo,
+		db:            db,
+		logger:        logger,
+		resultsDir:    resultsDir, // 🔧 传入 resultsDir 用于读取 flows.jsonl
 	}
 }
 
@@ -115,10 +118,14 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 		"static_urls":  len(staticURLs),
 	}).Info("🔍 [步骤4] 开始分析主域名（合并动态+静态URL）...")
 
+	// 提取应用名称（用于拼音匹配）
+	appName := s.extractAppName(&task)
+
 	primaryResult := s.analyzer.AnalyzePrimaryDomain(
 		ctx,
 		task.PackageName,
 		task.APKName,
+		appName, // 新增：传入应用名称用于拼音匹配
 		dynamicURLs,
 		staticURLs,
 	)
@@ -130,11 +137,56 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 		"candidates_count": len(primaryResult.Candidates),
 	}).Info("✅ [步骤4] 主域名分析完成")
 
+	// 步骤4.5: URL 分类分析（新规则）
+	s.logger.WithField("task_id", taskID).Info("🏷️ [步骤4.5] 开始 URL 分类分析（6条规则匹配）...")
+
+	// 构建应用信息（从静态分析报告获取开发者信息）
+	developer := s.getDeveloperFromStaticReport(ctx, taskID)
+	appInfo := &AppInfo{
+		AppName:     s.extractAppName(&task),
+		PackageName: task.PackageName,
+		Developer:   developer,
+	}
+
+	// 合并所有 URL 进行分类
+	allURLsForClassify := make([]string, 0, len(dynamicURLs)+len(staticURLs))
+	allURLsForClassify = append(allURLsForClassify, dynamicURLs...)
+	allURLsForClassify = append(allURLsForClassify, staticURLs...)
+
+	// 执行 URL 分类
+	urlClassifications := s.urlClassifier.ClassifyURLs(ctx, allURLsForClassify, appInfo)
+	classificationSummary := SummarizeClassifications(urlClassifications)
+
+	s.logger.WithFields(logrus.Fields{
+		"task_id":           taskID,
+		"total_urls":        classificationSummary.TotalCount,
+		"app_server_count":  classificationSummary.AppServerCount,
+		"third_party_count": classificationSummary.ThirdPartyCount,
+		"unknown_count":     classificationSummary.UnknownCount,
+	}).Info("✅ [步骤4.5] URL 分类分析完成")
+
+	// 步骤4.6: 解析应用服务器URL的IP归属地
+	s.logger.WithField("task_id", taskID).Info("🌐 [步骤4.6] 开始解析应用服务器URL的IP归属地...")
+	if classificationSummary != nil && len(classificationSummary.AppServerURLs) > 0 {
+		appServerDomains := s.extractDomainsFromClassifications(classificationSummary.AppServerURLs)
+		s.logger.WithFields(logrus.Fields{
+			"task_id":              taskID,
+			"app_server_urls":      len(classificationSummary.AppServerURLs),
+			"unique_domains":       len(appServerDomains),
+		}).Info("📋 [步骤4.6] 提取应用服务器域名完成")
+
+		if len(appServerDomains) > 0 {
+			s.resolveAndSaveAppServerDomains(ctx, taskID, appServerDomains)
+		}
+	} else {
+		s.logger.WithField("task_id", taskID).Info("⚠️ [步骤4.6] 无应用服务器URL，跳过IP解析")
+	}
+
 	// 步骤5: 查询应用备案信息
 	s.logger.WithField("task_id", taskID).Info("🏢 [步骤5] 查询应用备案信息...")
 	var beianResults []*BeianResult
 
-	appName := s.extractAppName(&task)
+	// appName 已在步骤4提取，直接使用
 	if appName != "" {
 		s.logger.WithFields(logrus.Fields{
 			"task_id":  taskID,
@@ -189,11 +241,26 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 		"total_domains": len(allDomains),
 	}).Info("✅ [步骤6.2] 域名提取完成")
 
-	// 步骤6.3: 过滤域名（只保留与主域名相关的）
-	s.logger.WithField("task_id", taskID).Info("🔍 [步骤6.3] 过滤域名（只保留主域名及其子域名）...")
+	// 步骤6.3: 过滤域名（保留主域名子域名 + URL分类中的应用服务器域名）
+	s.logger.WithField("task_id", taskID).Info("🔍 [步骤6.3] 过滤域名（主域名子域名 + 应用服务器域名）...")
+
+	// 收集 URL 分类中的应用服务器域名
+	appServerDomainSet := make(map[string]bool)
+	if classificationSummary != nil && len(classificationSummary.AppServerURLs) > 0 {
+		for _, u := range classificationSummary.AppServerURLs {
+			if u.Domain != "" {
+				appServerDomainSet[u.Domain] = true
+			}
+		}
+		s.logger.WithFields(logrus.Fields{
+			"task_id":                  taskID,
+			"app_server_domain_count":  len(appServerDomainSet),
+		}).Info("📋 [步骤6.3] 收集到应用服务器域名")
+	}
 
 	filteredCount := 0
 	skippedCount := 0
+	appServerCount := 0
 
 	for _, domain := range allDomains {
 		if domain == "" {
@@ -218,6 +285,12 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 			isRelated = true
 		}
 
+		// 新增：URL分类中的应用服务器域名也保留
+		if appServerDomainSet[domain] {
+			isRelated = true
+			appServerCount++
+		}
+
 		if !isRelated {
 			skippedCount++
 			continue
@@ -235,11 +308,12 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 	}
 
 	s.logger.WithFields(logrus.Fields{
-		"task_id":        taskID,
-		"filtered_count": filteredCount,
-		"skipped_count":  skippedCount,
-		"domains":        len(domainsToQuery),
-		"ips":            len(ipsToQuery),
+		"task_id":          taskID,
+		"filtered_count":   filteredCount,
+		"skipped_count":    skippedCount,
+		"app_server_added": appServerCount,
+		"domains":          len(domainsToQuery),
+		"ips":              len(ipsToQuery),
 	}).Info("✅ [步骤6.3] 域名过滤完成")
 
 	// 步骤6.4: 确保主域名被包含
@@ -477,16 +551,19 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 		"total_records": len(ipResults),
 	}).Info("💾 [步骤11] 保存域名分析结果到数据库...")
 
-	if err := s.saveToDB(ctx, taskID, primaryResult, beianResults, ipResults); err != nil {
+	if err := s.saveToDB(ctx, taskID, primaryResult, beianResults, ipResults, classificationSummary); err != nil {
 		s.logger.WithError(err).WithField("task_id", taskID).Error("❌ [步骤11] 保存失败")
 		return err
 	}
 
 	s.logger.WithFields(logrus.Fields{
-		"task_id":        taskID,
-		"primary_domain": primaryResult.PrimaryDomain,
-		"confidence":     primaryResult.Confidence,
-		"saved_records":  len(ipResults),
+		"task_id":           taskID,
+		"primary_domain":    primaryResult.PrimaryDomain,
+		"confidence":        primaryResult.Confidence,
+		"saved_records":     len(ipResults),
+		"url_app_server":    classificationSummary.AppServerCount,
+		"url_third_party":   classificationSummary.ThirdPartyCount,
+		"url_unknown":       classificationSummary.UnknownCount,
 	}).Info("✅✅✅ ========== [域名分析] 全部完成 ==========")
 
 	return nil
@@ -709,6 +786,7 @@ func (s *AnalysisService) saveToDB(
 	primaryResult *PrimaryDomainResult,
 	beianResults []*BeianResult,
 	ipResults map[string]*IPLocationResult,
+	urlClassification *ClassificationSummary,
 ) error {
 	// 构建 DomainAnalysis 对象
 	now := time.Now()
@@ -735,6 +813,12 @@ func (s *AnalysisService) saveToDB(
 	// 保存 IP 归属地信息到 JSON 字段（兼容旧版本）
 	ipJSON, _ := json.Marshal(ipResultArray)
 	domainAnalysis.AppDomainsJSON = string(ipJSON)
+
+	// 保存 URL 分类结果到 JSON 字段（新增）
+	if urlClassification != nil {
+		urlClassificationJSON, _ := json.Marshal(urlClassification)
+		domainAnalysis.URLClassificationJSON = string(urlClassificationJSON)
+	}
 
 	// 使用专门的 SaveDomainAnalysis 方法保存
 	if err := s.taskRepo.SaveDomainAnalysis(ctx, domainAnalysis); err != nil {
@@ -844,4 +928,162 @@ func getIPSources(results []*IPLocationResult) []string {
 		}
 	}
 	return sources
+}
+
+// extractDomainsFromClassifications 从分类结果中提取唯一域名
+func (s *AnalysisService) extractDomainsFromClassifications(urls []URLClassification) []string {
+	domainSet := make(map[string]bool)
+	domains := []string{}
+
+	for _, u := range urls {
+		if u.Domain != "" && !domainSet[u.Domain] {
+			domainSet[u.Domain] = true
+			domains = append(domains, u.Domain)
+		}
+	}
+
+	return domains
+}
+
+// resolveAndSaveAppServerDomains 解析应用服务器域名的IP并保存到数据库
+func (s *AnalysisService) resolveAndSaveAppServerDomains(ctx context.Context, taskID string, domains []string) {
+	s.logger.WithFields(logrus.Fields{
+		"task_id":      taskID,
+		"domain_count": len(domains),
+	}).Info("🔍 [步骤4.6] 开始多源DNS解析应用服务器域名...")
+
+	// 分离域名和IP地址
+	domainsToQuery := []string{}
+	ipsToQuery := []string{}
+
+	for _, domain := range domains {
+		if s.isIPAddress(domain) {
+			ipsToQuery = append(ipsToQuery, domain)
+		} else {
+			domainsToQuery = append(domainsToQuery, domain)
+		}
+	}
+
+	// 使用多源 DNS 解析域名（电信+移动）
+	ipResults := make(map[string]*IPLocationResult)
+
+	if len(domainsToQuery) > 0 {
+		multiResults := s.ipLocation.BatchQueryDomainsMulti(ctx, domainsToQuery)
+
+		for domain, multiResult := range multiResults {
+			if len(multiResult.Results) > 0 {
+				for _, result := range multiResult.Results {
+					// 使用 domain:ip 作为 key，确保不同 IP 都能保存
+					key := domain + ":" + result.IP
+					ipResults[key] = result
+
+					// 确保 dns_source 被保存到 Source 字段
+					if result.Info != nil {
+						if dnsSource, ok := result.Info["dns_source"]; ok {
+							result.Source = dnsSource
+						}
+					}
+				}
+
+				s.logger.WithFields(logrus.Fields{
+					"task_id":    taskID,
+					"domain":     domain,
+					"ip_count":   len(multiResult.Results),
+				}).Debug("🔀 [步骤4.6] 应用服务器域名DNS解析完成")
+			}
+		}
+	}
+
+	// 查询直连IP的归属地
+	if len(ipsToQuery) > 0 {
+		directIPResults := s.ipLocation.BatchQueryIPs(ctx, ipsToQuery)
+		for ip, result := range directIPResults {
+			ipResults[ip] = result
+		}
+	}
+
+	s.logger.WithFields(logrus.Fields{
+		"task_id":       taskID,
+		"total_results": len(ipResults),
+	}).Info("✅ [步骤4.6] 应用服务器域名IP解析完成")
+
+	// 保存到 task_app_domains 表（去重：检查是否已存在）
+	savedCount := 0
+	skippedCount := 0
+
+	for _, result := range ipResults {
+		// 检查是否已存在相同的 task_id + domain + ip 组合
+		var existingCount int64
+		s.db.WithContext(ctx).Model(&appDomain.TaskAppDomain{}).
+			Where("task_id = ? AND domain = ? AND ip = ?", taskID, result.Domain, result.IP).
+			Count(&existingCount)
+
+		if existingCount > 0 {
+			skippedCount++
+			continue
+		}
+
+		// 插入新记录，标记来源为 app_server_classification
+		taskAppDomain := &appDomain.TaskAppDomain{
+			TaskID:   taskID,
+			Domain:   result.Domain,
+			IP:       result.IP,
+			Province: result.Province,
+			City:     result.City,
+			ISP:      result.ISP,
+			Source:   "app_server_classification", // 标记来源
+		}
+
+		// 如果有 dns_source，追加到 Source 字段
+		if result.Info != nil {
+			if dnsSource, ok := result.Info["dns_source"]; ok {
+				taskAppDomain.Source = "app_server_" + dnsSource
+			}
+		}
+
+		if err := s.db.WithContext(ctx).Create(taskAppDomain).Error; err != nil {
+			s.logger.WithError(err).WithFields(logrus.Fields{
+				"task_id": taskID,
+				"domain":  result.Domain,
+				"ip":      result.IP,
+			}).Warn("Failed to save app server domain")
+		} else {
+			savedCount++
+		}
+	}
+
+	s.logger.WithFields(logrus.Fields{
+		"task_id":       taskID,
+		"saved_count":   savedCount,
+		"skipped_count": skippedCount,
+	}).Info("💾 [步骤4.6] 应用服务器域名保存完成")
+}
+
+// getDeveloperFromStaticReport 从静态分析报告获取开发者信息
+func (s *AnalysisService) getDeveloperFromStaticReport(ctx context.Context, taskID string) string {
+	// 查询静态分析报告
+	var staticReport appDomain.TaskStaticReport
+	if err := s.db.WithContext(ctx).Where("task_id = ?", taskID).First(&staticReport).Error; err != nil {
+		s.logger.WithError(err).WithField("task_id", taskID).Debug("Failed to get static report for developer info")
+		return ""
+	}
+
+	// 优先返回公司名称，如果没有则返回开发者名称
+	if staticReport.CompanyName != "" {
+		s.logger.WithFields(logrus.Fields{
+			"task_id":      taskID,
+			"company_name": staticReport.CompanyName,
+		}).Info("🏢 Using company name from certificate for URL classification")
+		return staticReport.CompanyName
+	}
+
+	if staticReport.Developer != "" {
+		s.logger.WithFields(logrus.Fields{
+			"task_id":   taskID,
+			"developer": staticReport.Developer,
+		}).Info("👤 Using developer name from certificate for URL classification")
+		return staticReport.Developer
+	}
+
+	return ""
 }

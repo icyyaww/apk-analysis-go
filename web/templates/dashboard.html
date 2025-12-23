@@ -891,6 +891,10 @@
                     <span>📤</span>
                     <span>上传 APK</span>
                 </button>
+                <div style="display: flex; align-items: center; gap: 10px; margin-left: 15px; padding-left: 15px; border-left: 1px solid #E2E8F0;">
+                    <span style="color: #64748B; font-size: 14px;">👤 <span id="current-user">用户</span></span>
+                    <button class="icon-btn tooltip" data-tooltip="退出登录" onclick="logout()" style="color: #EF4444;">🚪</button>
+                </div>
             </div>
         </div>
 
@@ -1088,8 +1092,7 @@
                     <option value="查询失败">查询失败</option>
                 </select>
 
-                <button class="action-btn" onclick="exportTasks()">📥 导出</button>
-                <button class="action-btn" onclick="exportUnrecordedDomains()" style="background: #F59E0B; color: white;">⚠️ 导出未备案</button>
+                <button class="action-btn" id="export-btn" onclick="exportFilteredTasks()">📥 导出全部</button>
                 <button class="btn-primary" onclick="showQueueModal()">
                     <span>⏳</span>
                     <span>队列管理</span>
@@ -1449,8 +1452,48 @@
         let ispFilter = '';
         let beianFilter = '';
 
+        // 认证检查
+        function checkAuth() {
+            const token = localStorage.getItem('token');
+            if (!token) {
+                window.location.href = '/login';
+                return false;
+            }
+            return true;
+        }
+
+        // 获取认证 headers
+        function getAuthHeaders() {
+            const token = localStorage.getItem('token');
+            return {
+                'Authorization': 'Bearer ' + token,
+                'Content-Type': 'application/json'
+            };
+        }
+
+        // 退出登录
+        function logout() {
+            localStorage.removeItem('token');
+            localStorage.removeItem('username');
+            localStorage.removeItem('role');
+            window.location.href = '/login';
+        }
+
+        // 显示当前用户
+        function showCurrentUser() {
+            const username = localStorage.getItem('username') || '用户';
+            const userDisplay = document.getElementById('current-user');
+            if (userDisplay) {
+                userDisplay.textContent = username;
+            }
+        }
+
         // Load tasks on page load
         window.addEventListener('DOMContentLoaded', () => {
+            // 首先检查认证
+            if (!checkAuth()) return;
+
+            showCurrentUser();
             loadStats();
             loadTasks();
             loadDashboard(); // 加载仪表盘数据（设备状态、最近任务等）
@@ -1521,6 +1564,9 @@
             ispFilter = document.getElementById('isp-filter').value;
             beianFilter = document.getElementById('beian-filter').value;
 
+            // 更新导出按钮文案
+            updateExportButtonText();
+
             // 重置到第一页并重新加载
             currentPage = 1;
             loadTasks();
@@ -1541,6 +1587,9 @@
 
         function filterTasksBySearch() {
             searchQuery = document.getElementById('search-input').value.toLowerCase();
+
+            // 更新导出按钮文案
+            updateExportButtonText();
 
             // 使用服务器端分页，后端已排除queued状态的任务
             // 前端只需要做状态过滤和搜索过滤
@@ -1841,12 +1890,13 @@
                             <table class="domain-details-table">
                                 <thead>
                                     <tr>
-                                        <th style="width: 50px;">主域名</th>
+                                        <th style="width: 50px;">标记</th>
                                         <th style="width: 200px;">域名/IP</th>
                                         <th>IP地址</th>
                                         <th>省份</th>
                                         <th>城市</th>
                                         <th>ISP</th>
+                                        <th style="width: 100px;">来源</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1861,18 +1911,40 @@
                 } catch {}
             }
 
+            // 格式化来源标签
+            function formatSource(source) {
+                if (!source) return '<span style="color: #94A3B8;">-</span>';
+                if (source.startsWith('app_server')) {
+                    // 应用服务器分类来源
+                    let dnsType = '';
+                    if (source.includes('telecom')) dnsType = '电信';
+                    else if (source.includes('mobile')) dnsType = '移动';
+                    return `<span style="background: #DCFCE7; color: #16A34A; padding: 2px 6px; border-radius: 4px; font-size: 11px;">应用服务器${dnsType ? '·' + dnsType : ''}</span>`;
+                } else if (source === 'telecom' || source === 'local') {
+                    return '<span style="background: #DBEAFE; color: #1E40AF; padding: 2px 6px; border-radius: 4px; font-size: 11px;">电信DNS</span>';
+                } else if (source === 'mobile' || source === 'remote') {
+                    return '<span style="background: #FEF3C7; color: #D97706; padding: 2px 6px; border-radius: 4px; font-size: 11px;">移动DNS</span>';
+                } else if (source === 'unknown') {
+                    return '<span style="color: #94A3B8; font-size: 11px;">未知</span>';
+                }
+                return `<span style="color: #64748B; font-size: 11px;">${source}</span>`;
+            }
+
             // 添加应用域名
             if (task.app_domains && Array.isArray(task.app_domains)) {
                 task.app_domains.forEach((domainItem, index) => {
                     const isPrimary = domainItem.domain === primaryDomain;
+                    const isAppServer = domainItem.source && domainItem.source.startsWith('app_server');
+                    const marker = isPrimary ? '⭐' : (isAppServer ? '🏠' : '');
                     modalContent += `
-                        <tr>
-                            <td style="text-align: center;">${isPrimary ? '⭐' : ''}</td>
+                        <tr${isAppServer ? ' style="background: #F0FDF4;"' : ''}>
+                            <td style="text-align: center;">${marker}</td>
                             <td><code style="font-size: 12px;">${domainItem.domain || 'N/A'}</code></td>
                             <td><code style="font-size: 11px; color: #64748B;">${domainItem.ip || 'N/A'}</code></td>
                             <td>${domainItem.province || '-'}</td>
                             <td>${domainItem.city || '-'}</td>
                             <td><span style="color: #3B82F6; font-weight: 500;">${domainItem.isp || '-'}</span></td>
+                            <td>${formatSource(domainItem.source)}</td>
                         </tr>
                     `;
                 });
@@ -1894,6 +1966,7 @@
                             <td>${province}</td>
                             <td>${city}</td>
                             <td><span style="color: #DC2626; font-weight: 500;">${isp}</span></td>
+                            <td><span style="background: #FEE2E2; color: #DC2626; padding: 2px 6px; border-radius: 4px; font-size: 11px;">硬编码IP</span></td>
                         </tr>
                     `;
                 });
@@ -1903,7 +1976,7 @@
                                 </tbody>
                             </table>
                             <div style="margin-top: 12px; padding: 8px; background: #F1F5F9; border-radius: 6px; font-size: 12px; color: #64748B;">
-                                💡 说明: ⭐ 表示主域名 | 📍 表示硬编码IP地址（绕过DNS）
+                                💡 说明: ⭐ 主域名 | 🏠 应用服务器（URL分类识别）| 📍 硬编码IP地址
                             </div>
                         </div>
                     </div>
@@ -2242,44 +2315,88 @@
             }
         }
 
-        function exportTasks() {
-            const csv = convertToCSV(filteredTasks);
-            downloadCSV(csv, 'tasks.csv');
+        // 获取当前筛选条件描述
+        function getFilterDescription() {
+            const parts = [];
+            const province = document.getElementById('province-filter').value;
+            const isp = document.getElementById('isp-filter').value;
+            const beian = document.getElementById('beian-filter').value;
+            const search = document.getElementById('search-input').value.trim();
+
+            if (province) parts.push(province);
+            if (isp) parts.push(isp);
+            if (beian) parts.push(beian);
+            if (search) parts.push(`搜索"${search}"`);
+
+            return parts.length > 0 ? parts.join('_') : '全部';
         }
 
-        function convertToCSV(data) {
-            const headers = ['APK 名称', '包名', '状态', '进度', '静态分析', '创建时间', '完成时间'];
-            const rows = data.map(task => [
-                task.apk_name,
-                task.package_name,
-                formatStatus(task.status),
-                `${task.progress_percent}%`,
-                task.static_status || 'N/A',
-                task.created_at,
-                task.completed_at || 'N/A'
-            ]);
+        // 更新导出按钮文案
+        function updateExportButtonText() {
+            const btn = document.getElementById('export-btn');
+            if (!btn) return;
 
-            return [headers, ...rows].map(row => row.join(',')).join('\n');
+            const province = document.getElementById('province-filter').value;
+            const isp = document.getElementById('isp-filter').value;
+            const beian = document.getElementById('beian-filter').value;
+            const search = document.getElementById('search-input').value.trim();
+
+            const hasFilter = province || isp || beian || search;
+            btn.textContent = hasFilter ? '📥 导出筛选结果' : '📥 导出全部';
         }
 
-        function downloadCSV(csv, filename) {
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            a.click();
-        }
+        // 获取备案状态文本（与页面 formatBeian() 逻辑保持一致）
+        function getBeianStatusText(task) {
+            if (!task.domain_beian_status) return '未查询';
 
-        // 导出未备案域名
-        async function exportUnrecordedDomains() {
             try {
-                // 获取所有未备案的任务
-                const response = await fetch('/api/tasks?limit=1000&beian_status=未备案');
+                const data = JSON.parse(task.domain_beian_status);
+                if (Array.isArray(data) && data.length > 0) {
+                    const result = data[0];
+                    // 1. status = 'registered' 表示已备案
+                    if (result.status === 'registered') {
+                        return '已备案';
+                    }
+                    // 2. status = 'error' 表示查询失败或未备案
+                    else if (result.status === 'error') {
+                        const reason = result.info?.reason || result.error;
+                        if (reason && reason.includes('暂无数据')) {
+                            return '未备案';
+                        }
+                        return '查询失败';
+                    }
+                    // 3. 兼容旧格式: beian_info.status
+                    else if (result.beian_info?.status === 'registered') {
+                        return '已备案';
+                    }
+                }
+                return '未查询';
+            } catch (e) {
+                return '解析错误';
+            }
+        }
+
+        // 导出筛选结果（结合所有筛选条件）
+        async function exportFilteredTasks() {
+            try {
+                // 获取当前筛选条件
+                const province = document.getElementById('province-filter').value;
+                const isp = document.getElementById('isp-filter').value;
+                const beian = document.getElementById('beian-filter').value;
+                const search = document.getElementById('search-input').value.trim();
+
+                // 构建 API 请求参数
+                let url = '/api/tasks?limit=1000&status=completed';
+                if (province) url += `&province=${encodeURIComponent(province)}`;
+                if (isp) url += `&isp=${encodeURIComponent(isp)}`;
+                if (beian) url += `&beian_status=${encodeURIComponent(beian)}`;
+                if (search) url += `&search=${encodeURIComponent(search)}`;
+
+                const response = await fetch(url);
                 const data = await response.json();
 
                 if (!data.tasks || data.tasks.length === 0) {
-                    alert('没有找到未备案的任务');
+                    alert('没有找到符合条件的任务');
                     return;
                 }
 
@@ -2288,37 +2405,24 @@
                 const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
 
                 for (const task of data.tasks) {
-                    // 解析备案信息，确认是未备案
-                    let isUnrecorded = false;
-                    let companyName = '';
-
-                    if (task.domain_beian_status) {
-                        try {
-                            const beianData = JSON.parse(task.domain_beian_status);
-                            if (Array.isArray(beianData) && beianData.length > 0) {
-                                const result = beianData[0];
-                                if (result.status === 'error' || result.status === 'unrecorded') {
-                                    isUnrecorded = true;
-                                }
-                                companyName = result.company_name || '';
-                            }
-                        } catch (e) {
-                            isUnrecorded = true;
-                        }
-                    } else {
-                        isUnrecorded = true;
-                    }
-
-                    if (!isUnrecorded) continue;
-
-                    // 获取应用名称
+                    // 获取应用名称和备案状态
                     const appName = task.static_report?.app_name || task.apk_name?.replace('.apk', '') || '';
                     const packageName = task.package_name || '';
+                    const beianStatus = getBeianStatusText(task);
 
                     // 处理域名列表
                     if (task.app_domains && task.app_domains.length > 0) {
                         let isFirstDomain = true;
                         for (const domainInfo of task.app_domains) {
+                            // 如果有省份筛选，过滤不匹配的域名
+                            if (province && domainInfo.province && !domainInfo.province.includes(province)) {
+                                continue;
+                            }
+                            // 如果有 ISP 筛选，过滤不匹配的域名
+                            if (isp && domainInfo.isp && !domainInfo.isp.includes(isp)) {
+                                continue;
+                            }
+
                             rows.push([
                                 isFirstDomain ? appName : '',
                                 isFirstDomain ? packageName : '',
@@ -2326,10 +2430,24 @@
                                 domainInfo.ip || '',
                                 domainInfo.province || '',
                                 domainInfo.isp || '',
-                                '未备案',
+                                beianStatus,
                                 today
                             ]);
                             isFirstDomain = false;
+                        }
+
+                        // 如果该任务的所有域名都被过滤掉了，但任务本身符合条件，仍然添加一条记录
+                        if (isFirstDomain) {
+                            rows.push([
+                                appName,
+                                packageName,
+                                '',
+                                '',
+                                '',
+                                '',
+                                beianStatus,
+                                today
+                            ]);
                         }
                     } else {
                         // 没有域名信息的情况
@@ -2340,14 +2458,14 @@
                             '',
                             '',
                             '',
-                            '未备案',
+                            beianStatus,
                             today
                         ]);
                     }
                 }
 
                 if (rows.length === 0) {
-                    alert('没有找到未备案的域名数据');
+                    alert('没有找到符合条件的数据');
                     return;
                 }
 
@@ -2371,14 +2489,16 @@
                     { wch: 15 }   // 发现时间
                 ];
 
-                // 添加工作表到工作簿
-                XLSX.utils.book_append_sheet(wb, ws, '未备案APP');
+                // 生成工作表名称和文件名
+                const filterDesc = getFilterDescription();
+                const sheetName = filterDesc.length > 31 ? filterDesc.substring(0, 31) : filterDesc;  // Excel 工作表名最长 31 字符
+                XLSX.utils.book_append_sheet(wb, ws, sheetName);
 
                 // 导出文件
-                const filename = `未备案APP_${new Date().toISOString().slice(0,10)}.xlsx`;
+                const filename = `APP分析_${filterDesc}_${new Date().toISOString().slice(0,10)}.xlsx`;
                 XLSX.writeFile(wb, filename);
 
-                alert(`成功导出 ${rows.length} 条未备案APP记录`);
+                alert(`成功导出 ${rows.length} 条记录`);
             } catch (error) {
                 console.error('导出失败:', error);
                 alert('导出失败: ' + error.message);

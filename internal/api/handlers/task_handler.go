@@ -363,11 +363,20 @@ func (h *TaskHandler) GetTaskURLs(c *gin.Context) {
 		}
 	}
 
+	// 3. 获取 URL 分类结果
+	var urlClassification map[string]interface{}
+	if task.DomainAnalysis != nil && task.DomainAnalysis.URLClassificationJSON != "" {
+		if err := json.Unmarshal([]byte(task.DomainAnalysis.URLClassificationJSON), &urlClassification); err != nil {
+			h.logger.WithError(err).Warn("Failed to parse URL classification JSON")
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"static_urls":   staticURLs,
-		"dynamic_urls":  dynamicURLs,
-		"static_count":  len(staticURLs),
-		"dynamic_count": len(dynamicURLs),
+		"static_urls":        staticURLs,
+		"dynamic_urls":       dynamicURLs,
+		"static_count":       len(staticURLs),
+		"dynamic_count":      len(dynamicURLs),
+		"url_classification": urlClassification,
 	})
 }
 
@@ -1406,6 +1415,8 @@ func (h *TaskHandler) GetStaticReport(c *gin.Context) {
 		"file_size":                 task.StaticReport.FileSize,
 		"md5":                       task.StaticReport.MD5,
 		"sha256":                    task.StaticReport.SHA256,
+		"developer":                 task.StaticReport.Developer,
+		"company_name":              task.StaticReport.CompanyName,
 		"activity_count":            task.StaticReport.ActivityCount,
 		"service_count":             task.StaticReport.ServiceCount,
 		"receiver_count":            task.StaticReport.ReceiverCount,
@@ -1630,6 +1641,14 @@ func (h *TaskHandler) generateHybridReportHTML(task *domain.Task) string {
                     <div class="info-value">%s (%s)</div>
                 </div>
                 <div class="info-item">
+                    <div class="info-label">开发者</div>
+                    <div class="info-value">%s</div>
+                </div>
+                <div class="info-item">
+                    <div class="info-label">公司/组织</div>
+                    <div class="info-value">%s</div>
+                </div>
+                <div class="info-item">
                     <div class="info-label">文件大小</div>
                     <div class="info-value">%s</div>
                 </div>
@@ -1717,6 +1736,8 @@ func (h *TaskHandler) generateHybridReportHTML(task *domain.Task) string {
 		html.EscapeString(report.PackageName),
 		html.EscapeString(report.VersionName),
 		html.EscapeString(report.VersionCode),
+		h.formatDeveloperInfo(report.Developer),
+		h.formatDeveloperInfo(report.CompanyName),
 		fileSize,
 		html.EscapeString(report.MD5),
 		string(report.AnalysisMode),
@@ -1875,5 +1896,13 @@ func (h *TaskHandler) generateHybridPermissionsTable(permissions []string) strin
 	}
 	result += `</table>`
 	return result
+}
+
+// formatDeveloperInfo 格式化开发者信息，如果为空则显示"未知"
+func (h *TaskHandler) formatDeveloperInfo(info string) string {
+	if info == "" {
+		return `<span style="color: #94A3B8;">未知</span>`
+	}
+	return html.EscapeString(info)
 }
 

@@ -336,6 +336,108 @@
             font-size: 16px;
         }
 
+        /* URL 分类相关样式 */
+        .classification-stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .stat-item {
+            background: #F8FAFC;
+            border-radius: 10px;
+            padding: 15px 25px;
+            text-align: center;
+        }
+
+        .stat-item .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #1E293B;
+        }
+
+        .stat-item .stat-label {
+            font-size: 13px;
+            color: #64748B;
+            margin-top: 4px;
+        }
+
+        .stat-item.app-server {
+            border-left: 4px solid #22C55E;
+        }
+
+        .stat-item.third-party {
+            border-left: 4px solid #F59E0B;
+        }
+
+        .stat-item.unknown {
+            border-left: 4px solid #94A3B8;
+        }
+
+        .classification-section {
+            margin-bottom: 30px;
+        }
+
+        .classification-section h3 {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1E293B;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .classification-section h3 .badge {
+            font-size: 12px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-weight: 500;
+        }
+
+        .badge-app {
+            background: #DCFCE7;
+            color: #16A34A;
+        }
+
+        .badge-third {
+            background: #FEF3C7;
+            color: #D97706;
+        }
+
+        .badge-unknown {
+            background: #F1F5F9;
+            color: #64748B;
+        }
+
+        .confidence-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .confidence-high {
+            background: #DCFCE7;
+            color: #16A34A;
+        }
+
+        .confidence-medium {
+            background: #FEF3C7;
+            color: #D97706;
+        }
+
+        .confidence-low {
+            background: #F1F5F9;
+            color: #64748B;
+        }
+
+        .reason-text {
+            font-size: 12px;
+            color: #64748B;
+        }
+
         /* 加载状态 */
         .loading {
             text-align: center;
@@ -385,6 +487,9 @@
             <button class="tab-button" onclick="switchTab('dynamic')">
                 动态分析 URL
             </button>
+            <button class="tab-button" onclick="switchTab('classification')">
+                URL 分类
+            </button>
         </div>
 
         <!-- 静态 URL Tab -->
@@ -428,6 +533,26 @@
                 </div>
             </div>
         </div>
+
+        <!-- URL 分类 Tab -->
+        <div id="classification-tab" class="tab-content">
+            <div class="url-card">
+                <div class="url-header">
+                    <div class="url-count">
+                        URL 智能分类
+                    </div>
+                    <div class="search-box">
+                        <input type="text" class="search-input" id="classification-search" placeholder="搜索 URL...">
+                    </div>
+                </div>
+                <div id="classification-content">
+                    <div class="loading">
+                        <div class="loading-spinner"></div>
+                        <div>加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -436,6 +561,7 @@
 
         let staticURLs = [];
         let dynamicURLs = [];
+        let urlClassification = null;
 
         // 加载 URL 数据
         async function loadURLs() {
@@ -445,6 +571,7 @@
 
                 staticURLs = data.static_urls || [];
                 dynamicURLs = data.dynamic_urls || [];
+                urlClassification = data.url_classification || null;
 
                 // 更新计数
                 document.getElementById('static-count').textContent = data.static_count || 0;
@@ -453,6 +580,7 @@
                 // 渲染表格
                 renderStaticURLs(staticURLs);
                 renderDynamicURLs(dynamicURLs);
+                renderURLClassification(urlClassification);
             } catch (error) {
                 console.error('Failed to load URLs:', error);
                 document.getElementById('static-content').innerHTML = `
@@ -462,6 +590,12 @@
                     </div>
                 `;
                 document.getElementById('dynamic-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <div class="empty-state-text">加载失败，请稍后重试</div>
+                    </div>
+                `;
+                document.getElementById('classification-content').innerHTML = `
                     <div class="empty-state">
                         <div class="empty-state-icon">❌</div>
                         <div class="empty-state-text">加载失败，请稍后重试</div>
@@ -586,6 +720,136 @@
             document.getElementById(`${tab}-tab`).classList.add('active');
         }
 
+        // 渲染 URL 分类结果
+        function renderURLClassification(classification, searchTerm = '') {
+            if (!classification) {
+                document.getElementById('classification-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <div class="empty-state-text">暂无 URL 分类数据<br><small>请等待域名分析完成</small></div>
+                    </div>
+                `;
+                return;
+            }
+
+            const appServerURLs = (classification.app_server_urls || []).filter(item =>
+                item.url.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+            const thirdPartyURLs = (classification.third_party_urls || []).filter(item =>
+                item.url.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+            const unknownURLs = (classification.unknown_urls || []).filter(item =>
+                item.url.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+
+            let html = `
+                <!-- 统计概览 -->
+                <div class="classification-stats">
+                    <div class="stat-item app-server">
+                        <div class="stat-value">${classification.app_server_count || 0}</div>
+                        <div class="stat-label">应用服务器</div>
+                    </div>
+                    <div class="stat-item third-party">
+                        <div class="stat-value">${classification.third_party_count || 0}</div>
+                        <div class="stat-label">第三方服务</div>
+                    </div>
+                    <div class="stat-item unknown">
+                        <div class="stat-value">${classification.unknown_count || 0}</div>
+                        <div class="stat-label">未分类</div>
+                    </div>
+                </div>
+            `;
+
+            // 应用服务器 URL 列表
+            if (appServerURLs.length > 0) {
+                html += `
+                    <div class="classification-section">
+                        <h3>
+                            <span>应用服务器</span>
+                            <span class="badge badge-app">${appServerURLs.length}</span>
+                        </h3>
+                        ${renderClassificationTable(appServerURLs)}
+                    </div>
+                `;
+            }
+
+            // 第三方服务 URL 列表
+            if (thirdPartyURLs.length > 0) {
+                html += `
+                    <div class="classification-section">
+                        <h3>
+                            <span>第三方服务</span>
+                            <span class="badge badge-third">${thirdPartyURLs.length}</span>
+                        </h3>
+                        ${renderClassificationTable(thirdPartyURLs)}
+                    </div>
+                `;
+            }
+
+            // 未分类 URL 列表
+            if (unknownURLs.length > 0) {
+                html += `
+                    <div class="classification-section">
+                        <h3>
+                            <span>未分类</span>
+                            <span class="badge badge-unknown">${unknownURLs.length}</span>
+                        </h3>
+                        ${renderClassificationTable(unknownURLs)}
+                    </div>
+                `;
+            }
+
+            if (appServerURLs.length === 0 && thirdPartyURLs.length === 0 && unknownURLs.length === 0) {
+                html += `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔍</div>
+                        <div class="empty-state-text">没有匹配的 URL</div>
+                    </div>
+                `;
+            }
+
+            document.getElementById('classification-content').innerHTML = html;
+        }
+
+        // 渲染分类表格
+        function renderClassificationTable(urls) {
+            let html = `
+                <table class="url-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 60px;">序号</th>
+                            <th>URL</th>
+                            <th style="width: 100px;">置信度</th>
+                            <th style="width: 200px;">匹配原因</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+
+            urls.forEach((item, index) => {
+                const confidence = item.confidence || 0;
+                const confidenceClass = confidence >= 0.9 ? 'confidence-high' :
+                                       confidence >= 0.7 ? 'confidence-medium' : 'confidence-low';
+                const confidencePercent = Math.round(confidence * 100);
+
+                html += `
+                    <tr>
+                        <td>${index + 1}</td>
+                        <td><a href="${item.url}" class="url-link" target="_blank">${item.url}</a></td>
+                        <td><span class="confidence-badge ${confidenceClass}">${confidencePercent}%</span></td>
+                        <td><span class="reason-text">${item.reason || '-'}</span></td>
+                    </tr>
+                `;
+            });
+
+            html += `
+                    </tbody>
+                </table>
+            `;
+
+            return html;
+        }
+
         // 搜索功能
         document.getElementById('static-search').addEventListener('input', (e) => {
             renderStaticURLs(staticURLs, e.target.value);
@@ -593,6 +857,10 @@
 
         document.getElementById('dynamic-search').addEventListener('input', (e) => {
             renderDynamicURLs(dynamicURLs, e.target.value);
+        });
+
+        document.getElementById('classification-search').addEventListener('input', (e) => {
+            renderURLClassification(urlClassification, e.target.value);
         });
 
         // 导出 URL
