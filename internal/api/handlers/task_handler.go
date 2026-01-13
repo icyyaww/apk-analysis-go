@@ -31,19 +31,21 @@ func NewTaskHandler(taskService service.TaskService, logger *logrus.Logger) *Tas
 }
 
 // ListTasks 获取任务列表
-// GET /api/tasks?page=1&page_size=20&status=completed&exclude_status=queued&province=广东&isp=阿里云&beian_status=已备案
+// GET /api/tasks?page=1&page_size=20&status=completed&exclude_status=queued&province=广东&isp=阿里云&beian_status=已备案&search=关键词
 // 支持分页参数，默认每页20条
 // 支持状态过滤：status=completed 或 exclude_status=queued
 // 支持域名归属地过滤：province=广东&isp=阿里云
 // 支持备案状态过滤：beian_status=已备案/未备案/查询失败
+// 支持搜索：search=关键词（搜索APK名称、应用名称、包名）
 func (h *TaskHandler) ListTasks(c *gin.Context) {
 	pageStr := c.DefaultQuery("page", "1")
 	pageSizeStr := c.DefaultQuery("page_size", "20")
-	statusFilter := c.Query("status")           // 例如: status=completed
-	excludeStatus := c.Query("exclude_status")  // 例如: exclude_status=queued
-	provinceFilter := c.Query("province")       // 例如: province=广东
-	ispFilter := c.Query("isp")                 // 例如: isp=阿里云
+	statusFilter := c.Query("status")            // 例如: status=completed
+	excludeStatus := c.Query("exclude_status")   // 例如: exclude_status=queued
+	provinceFilter := c.Query("province")        // 例如: province=广东
+	ispFilter := c.Query("isp")                  // 例如: isp=阿里云
 	beianStatusFilter := c.Query("beian_status") // 例如: beian_status=已备案
+	searchQuery := c.Query("search")             // 例如: search=微信（搜索APK名称、应用名称、包名）
 
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page <= 0 {
@@ -70,10 +72,10 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		// 有省份/ISP/备案过滤时，需要查询所有符合状态条件的数据再在内存中过滤
 		// 查询上限设为 5000 条，避免内存溢出
 		queryLimit := 5000
-		tasks, _, err = h.taskService.ListTasksWithStatusFilter(c.Request.Context(), 1, queryLimit, excludeStatus, statusFilter)
+		tasks, _, err = h.taskService.ListTasksWithSearch(c.Request.Context(), 1, queryLimit, excludeStatus, statusFilter, searchQuery)
 	} else {
-		// 仅有 status 和 exclude_status 时，使用数据库分页
-		tasks, total, err = h.taskService.ListTasksWithStatusFilter(c.Request.Context(), page, pageSize, excludeStatus, statusFilter)
+		// 仅有 status 和 exclude_status 时，使用数据库分页（支持搜索）
+		tasks, total, err = h.taskService.ListTasksWithSearch(c.Request.Context(), page, pageSize, excludeStatus, statusFilter, searchQuery)
 	}
 
 	if err != nil {
@@ -192,6 +194,121 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		"page":        page,
 		"page_size":   pageSize,
 		"total_pages": totalPages,
+	})
+}
+
+// ExportTasks 导出任务列表（不分页，用于导出功能）
+// GET /api/tasks/export?status=completed&province=广东&isp=阿里云&beian_status=已备案&search=关键词
+// 最大返回 10000 条
+func (h *TaskHandler) ExportTasks(c *gin.Context) {
+	statusFilter := c.Query("status")            // 例如: status=completed
+	excludeStatus := c.Query("exclude_status")   // 例如: exclude_status=queued
+	provinceFilter := c.Query("province")        // 例如: province=广东
+	ispFilter := c.Query("isp")                  // 例如: isp=阿里云
+	beianStatusFilter := c.Query("beian_status") // 例如: beian_status=已备案
+	searchQuery := c.Query("search")             // 例如: search=微信
+
+	// 导出最大限制 10000 条
+	maxExportLimit := 10000
+
+	// 查询所有符合条件的数据（不分页）
+	tasks, _, err := h.taskService.ListTasksWithSearch(c.Request.Context(), 1, maxExportLimit, excludeStatus, statusFilter, searchQuery)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to export tasks")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "导出任务列表失败",
+		})
+		return
+	}
+
+	// 如果有内存过滤条件（省份、ISP、备案状态），在内存中过滤
+	var filteredTasks []*domain.Task
+	hasMemoryFilter := provinceFilter != "" || ispFilter != "" || beianStatusFilter != ""
+
+	if hasMemoryFilter {
+		for _, task := range tasks {
+			// 域名归属地过滤（省份、ISP）
+			if provinceFilter != "" || ispFilter != "" {
+				matched := false
+				if len(task.AppDomains) > 0 {
+					for _, appDomain := range task.AppDomains {
+						provinceMatch := provinceFilter == "" || appDomain.Province == provinceFilter
+						ispMatch := ispFilter == "" || strings.Contains(appDomain.ISP, ispFilter)
+
+						if provinceMatch && ispMatch {
+							matched = true
+							break
+						}
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+
+			// 备案状态过滤
+			if beianStatusFilter != "" {
+				if task.DomainAnalysis == nil || task.DomainAnalysis.DomainBeianJSON == "" {
+					continue
+				}
+
+				var beianList []map[string]interface{}
+				var beianSingle map[string]interface{}
+
+				if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianList); err != nil {
+					if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianSingle); err != nil {
+						continue
+					}
+					beianList = []map[string]interface{}{beianSingle}
+				}
+
+				if len(beianList) == 0 {
+					continue
+				}
+
+				status := ""
+				if statusVal, ok := beianList[0]["status"].(string); ok {
+					status = statusVal
+				}
+
+				reason := ""
+				if info, ok := beianList[0]["info"].(map[string]interface{}); ok {
+					if reasonVal, ok := info["reason"].(string); ok {
+						reason = reasonVal
+					}
+				}
+
+				matched := false
+				switch beianStatusFilter {
+				case "已备案":
+					matched = status == "registered" || status == "ok" || status == "已备案"
+				case "未备案":
+					matched = (status == "error" && strings.Contains(reason, "暂无数据")) || status == "not_found" || status == "未备案"
+				case "查询失败":
+					matched = (status == "error" && !strings.Contains(reason, "暂无数据")) || status == "查询失败"
+				default:
+					matched = status == beianStatusFilter
+				}
+
+				if !matched {
+					continue
+				}
+			}
+
+			filteredTasks = append(filteredTasks, task)
+		}
+		tasks = filteredTasks
+	}
+
+	// 转换为响应格式
+	taskList := make([]map[string]interface{}, len(tasks))
+	for i, task := range tasks {
+		taskList[i] = h.taskToResponse(task)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tasks": taskList,
+		"total": len(taskList),
 	})
 }
 

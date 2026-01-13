@@ -49,6 +49,9 @@ type TaskService interface {
 	// 获取任务列表（支持状态过滤和排除）
 	ListTasksWithStatusFilter(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string) ([]*domain.Task, int64, error)
 
+	// 获取任务列表（支持状态过滤、排除和搜索）
+	ListTasksWithSearch(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string) ([]*domain.Task, int64, error)
+
 	// 获取所有排队中的任务（不分页）
 	ListQueuedTasks(ctx context.Context) ([]*domain.Task, error)
 }
@@ -198,6 +201,10 @@ func (s *taskService) ListTasksWithExcludeStatus(ctx context.Context, page int, 
 
 func (s *taskService) ListTasksWithStatusFilter(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string) ([]*domain.Task, int64, error) {
 	return s.taskRepo.ListWithStatusFilter(ctx, page, pageSize, excludeStatus, statusFilter)
+}
+
+func (s *taskService) ListTasksWithSearch(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string) ([]*domain.Task, int64, error) {
+	return s.taskRepo.ListWithSearch(ctx, page, pageSize, excludeStatus, statusFilter, search)
 }
 
 func (s *taskService) ListQueuedTasks(ctx context.Context) ([]*domain.Task, error) {

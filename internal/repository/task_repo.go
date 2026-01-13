@@ -48,6 +48,8 @@ type TaskRepository interface {
 	ListWithExcludeStatus(ctx context.Context, page int, pageSize int, excludeStatus string) ([]*domain.Task, int64, error)
 	// 获取任务列表（支持状态过滤和排除）
 	ListWithStatusFilter(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string) ([]*domain.Task, int64, error)
+	// 获取任务列表（支持状态过滤、排除和搜索）
+	ListWithSearch(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string) ([]*domain.Task, int64, error)
 	// 获取所有排队中的任务（不分页）
 	ListQueuedTasks(ctx context.Context) ([]*domain.Task, error)
 }
@@ -827,6 +829,70 @@ func (r *taskRepo) ListWithStatusFilter(ctx context.Context, page int, pageSize 
 	}
 	if statusFilter != "" {
 		query = query.Where("status = ?", statusFilter)
+	}
+
+	err := query.
+		Preload("StaticReport", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "url_count", "domain_count", "analysis_mode")
+		}).
+		Preload("DomainAnalysis", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "primary_domain_json", "domain_beian_json", "app_domains_json")
+		}).
+		Preload("AppDomains", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "domain", "ip", "province", "city", "isp", "source")
+		}).
+		Preload("Activities", func(db *gorm.DB) *gorm.DB {
+			return db.Select("task_id", "activity_details_json")
+		}).
+		// 按完成时间倒序（最新的在前）
+		Order("completed_at DESC, created_at DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&tasks).Error
+
+	return tasks, total, err
+}
+
+// ListWithSearch 获取任务列表（支持状态过滤、排除和搜索）
+// search: 搜索APK名称、应用名称、包名（模糊匹配）
+func (r *taskRepo) ListWithSearch(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string) ([]*domain.Task, int64, error) {
+	var tasks []*domain.Task
+	var total int64
+
+	// 构建基础查询
+	baseQuery := r.db.WithContext(ctx).Model(&domain.Task{})
+	if excludeStatus != "" {
+		baseQuery = baseQuery.Where("status != ?", excludeStatus)
+	}
+	if statusFilter != "" {
+		baseQuery = baseQuery.Where("status = ?", statusFilter)
+	}
+	// 添加搜索条件
+	if search != "" {
+		searchPattern := "%" + search + "%"
+		baseQuery = baseQuery.Where("apk_name LIKE ? OR app_name LIKE ? OR package_name LIKE ?", searchPattern, searchPattern, searchPattern)
+	}
+
+	// 统计符合条件的总数
+	if err := baseQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 计算偏移量
+	offset := (page - 1) * pageSize
+
+	// 查询当前页数据
+	query := r.db.WithContext(ctx)
+	if excludeStatus != "" {
+		query = query.Where("status != ?", excludeStatus)
+	}
+	if statusFilter != "" {
+		query = query.Where("status = ?", statusFilter)
+	}
+	// 添加搜索条件
+	if search != "" {
+		searchPattern := "%" + search + "%"
+		query = query.Where("apk_name LIKE ? OR app_name LIKE ? OR package_name LIKE ?", searchPattern, searchPattern, searchPattern)
 	}
 
 	err := query.

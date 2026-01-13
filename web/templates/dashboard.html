@@ -1556,6 +1556,10 @@
                 if (beianFilter) {
                     queryParams += `&beian_status=${encodeURIComponent(beianFilter)}`;
                 }
+                // 添加搜索参数
+                if (searchQuery) {
+                    queryParams += `&search=${encodeURIComponent(searchQuery)}`;
+                }
 
                 const response = await fetch(`/api/tasks?${queryParams}`);
                 const data = await response.json();
@@ -1575,7 +1579,9 @@
                 // 保存当前任务数据到全局变量，供Modal使用
                 window.currentTasks = allTasks;
 
-                filterTasksBySearch();
+                // 搜索已在服务端完成，直接使用返回的数据
+                filteredTasks = allTasks;
+                renderTasks();
             } catch (error) {
                 console.error('Failed to load tasks:', error);
                 showEmptyState('Failed to load tasks');
@@ -1610,22 +1616,25 @@
             loadTasks();
         }
 
+        // 防抖定时器
+        let searchDebounceTimer = null;
+
         function filterTasksBySearch() {
-            searchQuery = document.getElementById('search-input').value.toLowerCase();
+            searchQuery = document.getElementById('search-input').value.trim();
 
             // 更新导出按钮文案
             updateExportButtonText();
 
-            // 状态过滤已在服务端完成，前端只做搜索过滤
-            filteredTasks = allTasks.filter(task => {
-                const matchesSearch = searchQuery === '' ||
-                    task.app_name?.toLowerCase().includes(searchQuery) ||
-                    task.apk_name?.toLowerCase().includes(searchQuery) ||
-                    task.package_name?.toLowerCase().includes(searchQuery);
-                return matchesSearch;
-            });
+            // 使用防抖，避免频繁请求
+            if (searchDebounceTimer) {
+                clearTimeout(searchDebounceTimer);
+            }
 
-            renderTasks();
+            searchDebounceTimer = setTimeout(() => {
+                // 重置到第一页并重新从服务端加载（带搜索参数）
+                currentPage = 1;
+                loadTasks();
+            }, 300); // 300ms 防抖
         }
 
         function renderTasks() {
@@ -2408,8 +2417,8 @@
                 const beian = document.getElementById('beian-filter').value;
                 const search = document.getElementById('search-input').value.trim();
 
-                // 构建 API 请求参数
-                let url = '/api/tasks?limit=1000&status=completed';
+                // 构建 API 请求参数（使用导出专用接口，不分页）
+                let url = '/api/tasks/export?status=completed';
                 if (province) url += `&province=${encodeURIComponent(province)}`;
                 if (isp) url += `&isp=${encodeURIComponent(isp)}`;
                 if (beian) url += `&beian_status=${encodeURIComponent(beian)}`;
@@ -2435,7 +2444,7 @@
 
                     // 处理域名列表
                     if (task.app_domains && task.app_domains.length > 0) {
-                        let isFirstDomain = true;
+                        let hasMatchedDomain = false;
                         for (const domainInfo of task.app_domains) {
                             // 如果有省份筛选，过滤不匹配的域名
                             if (province && domainInfo.province && !domainInfo.province.includes(province)) {
@@ -2447,8 +2456,8 @@
                             }
 
                             rows.push([
-                                isFirstDomain ? appName : '',
-                                isFirstDomain ? packageName : '',
+                                appName,
+                                packageName,
                                 domainInfo.domain || '',
                                 domainInfo.ip || '',
                                 domainInfo.province || '',
@@ -2456,11 +2465,11 @@
                                 beianStatus,
                                 today
                             ]);
-                            isFirstDomain = false;
+                            hasMatchedDomain = true;
                         }
 
                         // 如果该任务的所有域名都被过滤掉了，但任务本身符合条件，仍然添加一条记录
-                        if (isFirstDomain) {
+                        if (!hasMatchedDomain) {
                             rows.push([
                                 appName,
                                 packageName,
