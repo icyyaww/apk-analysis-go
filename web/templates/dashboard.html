@@ -1077,12 +1077,31 @@
 
                 <select id="isp-filter" class="filter-select" onchange="applyAdvancedFilters()">
                     <option value="">全部ISP</option>
-                    <option value="阿里云">阿里云</option>
-                    <option value="腾讯云">腾讯云</option>
-                    <option value="谷歌云">谷歌云</option>
                     <option value="电信">电信</option>
                     <option value="移动">移动</option>
                     <option value="联通">联通</option>
+                    <option value="电信&联通">电信&联通</option>
+                    <option value="电信&移动">电信&移动</option>
+                    <option value="电信&联通&移动">电信&联通&移动</option>
+                    <option value="铁通">铁通</option>
+                    <option value="广电">广电</option>
+                    <option value="263网络通信">263网络通信</option>
+                    <option value="阿里云">阿里云</option>
+                    <option value="腾讯云">腾讯云</option>
+                    <option value="华为云">华为云</option>
+                    <option value="百度云">百度云</option>
+                    <option value="京东云">京东云</option>
+                    <option value="金山云">金山云</option>
+                    <option value="网易云">网易云</option>
+                    <option value="美团云">美团云</option>
+                    <option value="字节跳动">字节跳动</option>
+                    <option value="优刻云">优刻云</option>
+                    <option value="世纪互联">世纪互联</option>
+                    <option value="亚马逊云">亚马逊云</option>
+                    <option value="微软云">微软云</option>
+                    <option value="谷歌云">谷歌云</option>
+                    <option value="Cloudflare">Cloudflare</option>
+                    <option value="Akamai">Akamai</option>
                 </select>
 
                 <select id="beian-filter" class="filter-select" onchange="applyAdvancedFilters()">
@@ -1522,6 +1541,11 @@
                 // 构建查询参数
                 let queryParams = `page=${currentPage}&page_size=${tasksPerPage}&exclude_status=queued`;
 
+                // 添加状态过滤参数（Tab 过滤）
+                if (currentFilter && currentFilter !== 'all') {
+                    queryParams += `&status=${encodeURIComponent(currentFilter)}`;
+                }
+
                 // 添加高级筛选参数
                 if (provinceFilter) {
                     queryParams += `&province=${encodeURIComponent(provinceFilter)}`;
@@ -1574,7 +1598,7 @@
 
         function filterTasks(filter) {
             currentFilter = filter;
-            currentPage = 1;
+            currentPage = 1;  // 重置到第一页
 
             // Update tab UI
             document.querySelectorAll('.tab').forEach(tab => {
@@ -1582,7 +1606,8 @@
             });
             event.target.classList.add('active');
 
-            filterTasksBySearch();
+            // 重新从服务端加载数据（带状态过滤）
+            loadTasks();
         }
 
         function filterTasksBySearch() {
@@ -1591,15 +1616,13 @@
             // 更新导出按钮文案
             updateExportButtonText();
 
-            // 使用服务器端分页，后端已排除queued状态的任务
-            // 前端只需要做状态过滤和搜索过滤
+            // 状态过滤已在服务端完成，前端只做搜索过滤
             filteredTasks = allTasks.filter(task => {
-                const matchesFilter = currentFilter === 'all' || task.status === currentFilter;
                 const matchesSearch = searchQuery === '' ||
                     task.app_name?.toLowerCase().includes(searchQuery) ||
                     task.apk_name?.toLowerCase().includes(searchQuery) ||
                     task.package_name?.toLowerCase().includes(searchQuery);
-                return matchesFilter && matchesSearch;
+                return matchesSearch;
             });
 
             renderTasks();

@@ -46,6 +46,10 @@ type TaskRepository interface {
 	GetStatusCounts(ctx context.Context) (map[string]int64, int64, error)
 	// 获取任务列表（支持排除指定状态）
 	ListWithExcludeStatus(ctx context.Context, page int, pageSize int, excludeStatus string) ([]*domain.Task, int64, error)
+	// 获取任务列表（支持状态过滤和排除）
+	ListWithStatusFilter(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string) ([]*domain.Task, int64, error)
+	// 获取所有排队中的任务（不分页）
+	ListQueuedTasks(ctx context.Context) ([]*domain.Task, error)
 }
 
 type taskRepo struct {
@@ -790,4 +794,71 @@ func (r *taskRepo) ListWithExcludeStatus(ctx context.Context, page int, pageSize
 		Find(&tasks).Error
 
 	return tasks, total, err
+}
+
+// ListWithStatusFilter 获取任务列表（支持状态过滤和排除）
+// statusFilter: 只返回指定状态的任务（如 "failed"）
+// excludeStatus: 排除指定状态的任务（如 "queued"）
+func (r *taskRepo) ListWithStatusFilter(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string) ([]*domain.Task, int64, error) {
+	var tasks []*domain.Task
+	var total int64
+
+	// 构建基础查询
+	baseQuery := r.db.WithContext(ctx).Model(&domain.Task{})
+	if excludeStatus != "" {
+		baseQuery = baseQuery.Where("status != ?", excludeStatus)
+	}
+	if statusFilter != "" {
+		baseQuery = baseQuery.Where("status = ?", statusFilter)
+	}
+
+	// 统计符合条件的总数
+	if err := baseQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 计算偏移量
+	offset := (page - 1) * pageSize
+
+	// 查询当前页数据
+	query := r.db.WithContext(ctx)
+	if excludeStatus != "" {
+		query = query.Where("status != ?", excludeStatus)
+	}
+	if statusFilter != "" {
+		query = query.Where("status = ?", statusFilter)
+	}
+
+	err := query.
+		Preload("StaticReport", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "url_count", "domain_count", "analysis_mode")
+		}).
+		Preload("DomainAnalysis", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "primary_domain_json", "domain_beian_json", "app_domains_json")
+		}).
+		Preload("AppDomains", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "domain", "ip", "province", "city", "isp", "source")
+		}).
+		Preload("Activities", func(db *gorm.DB) *gorm.DB {
+			return db.Select("task_id", "activity_details_json")
+		}).
+		// 按完成时间倒序（最新的在前）
+		Order("completed_at DESC, created_at DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&tasks).Error
+
+	return tasks, total, err
+}
+
+// ListQueuedTasks 获取所有排队中的任务（不分页）
+func (r *taskRepo) ListQueuedTasks(ctx context.Context) ([]*domain.Task, error) {
+	var tasks []*domain.Task
+
+	err := r.db.WithContext(ctx).
+		Where("status = ?", "queued").
+		Order("created_at ASC"). // 按创建时间升序，先进先出
+		Find(&tasks).Error
+
+	return tasks, err
 }

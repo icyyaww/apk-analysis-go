@@ -865,8 +865,116 @@ func (da *DomainAnalyzer) calculatePackageMatchScore(domain, packageName, apkNam
 		}
 	}
 
+	// 6. 🔧 新增：应用名称完整拼音前缀匹配
+	// 场景：应用名"爱齿商城"，域名 aichi123.cn
+	// 逻辑：提取应用名称前N个汉字的完整拼音，与域名匹配
+	// 例如：爱齿商城 -> 前2字"爱齿" -> aichi -> 匹配 aichi123.cn
+	if bestMatch < 22.0 && appName != "" {
+		fullPinyinPrefixes := da.getAppNameFullPinyinPrefixes(appName)
+		for _, py := range fullPinyinPrefixes {
+			// 完整拼音前缀至少3个字符才有意义（如 "ai" 太短容易误匹配）
+			if len(py) < 3 {
+				continue
+			}
+
+			// 检查域名主要部分是否以完整拼音前缀开头
+			if strings.HasPrefix(domainMain, py) {
+				// 根据匹配长度给分：匹配越长分数越高
+				score := 22.0 + float64(len(py))*0.5 // 基础22分 + 每个字符0.5分
+				if score > 30.0 {
+					score = 30.0 // 上限30分
+				}
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"pinyin":      py,
+						"score":       score,
+						"match_type":  "App name full pinyin prefix match (starts with)",
+					}).Debug("Domain starts with app name full pinyin prefix")
+				}
+				break // 找到匹配就退出
+			}
+
+			// 也检查域名是否包含完整拼音前缀
+			if strings.Contains(domainMain, py) && bestMatch < 20.0 {
+				score := 20.0 + float64(len(py))*0.3 // 基础20分 + 每个字符0.3分
+				if score > 25.0 {
+					score = 25.0 // 上限25分
+				}
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"pinyin":      py,
+						"score":       score,
+						"match_type":  "App name full pinyin prefix match (contains)",
+					}).Debug("Domain contains app name full pinyin prefix")
+				}
+			}
+		}
+	}
+
+	// 7. 🔧 新增：应用名称拼音音节缩写匹配
+	// 场景：应用名"爱客宝"，域名 aikbao.com
+	// 逻辑：生成拼音缩写变体（首字完整+中间声母+尾字完整）
+	// 例如：爱客宝 -> aikbao (ai + k + bao)
+	if bestMatch < 21.0 && appName != "" {
+		pinyinAbbrevs := da.getAppNamePinyinAbbreviations(appName)
+		for _, abbrev := range pinyinAbbrevs {
+			// 缩写至少4个字符才有意义
+			if len(abbrev) < 4 {
+				continue
+			}
+
+			// 检查域名主要部分是否以缩写开头或等于缩写
+			if domainMain == abbrev || strings.HasPrefix(domainMain, abbrev) {
+				score := 21.0 + float64(len(abbrev))*0.3 // 基础21分 + 每个字符0.3分
+				if score > 25.0 {
+					score = 25.0
+				}
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"abbrev":      abbrev,
+						"score":       score,
+						"match_type":  "App name pinyin abbreviation match (starts with)",
+					}).Debug("Domain starts with app name pinyin abbreviation")
+				}
+				break
+			}
+
+			// 也检查域名是否包含缩写
+			if strings.Contains(domainMain, abbrev) && bestMatch < 19.0 {
+				score := 19.0 + float64(len(abbrev))*0.2
+				if score > 22.0 {
+					score = 22.0
+				}
+				if score > bestMatch {
+					bestMatch = score
+					da.logger.WithFields(logrus.Fields{
+						"domain":      domain,
+						"domain_main": domainMain,
+						"app_name":    appName,
+						"abbrev":      abbrev,
+						"score":       score,
+						"match_type":  "App name pinyin abbreviation match (contains)",
+					}).Debug("Domain contains app name pinyin abbreviation")
+				}
+			}
+		}
+	}
+
 	return bestMatch
 }
+
 // checkAPIFeatures 检查API特征 (0-5分) - 原3分提升到5分
 func (da *DomainAnalyzer) checkAPIFeatures(urls []string) (bool, float64) {
 	apiPatterns := []string{"/api/", "/v1/", "/v2/", "/v3/", "/rest/", "/graphql", "/json"}
@@ -1473,4 +1581,189 @@ func (da *DomainAnalyzer) getAppNamePrefixPinyinVariations(appName string) []str
 	}
 
 	return variations
+}
+
+// getAppNameFullPinyinPrefixes 获取应用名称前N个汉字的完整拼音
+// 例如："爱齿商城" -> ["ai", "aichi", "aichishang", "aichishangcheng"]
+// 这样可以匹配到 aichi123.cn (爱齿)
+func (da *DomainAnalyzer) getAppNameFullPinyinPrefixes(appName string) []string {
+	if appName == "" {
+		return nil
+	}
+
+	// 过滤非中文字符，只保留中文
+	var chineseChars []rune
+	for _, r := range appName {
+		if r >= 0x4e00 && r <= 0x9fff {
+			chineseChars = append(chineseChars, r)
+		}
+	}
+
+	if len(chineseChars) < 2 {
+		return nil
+	}
+
+	// 配置拼音转换参数
+	pinyinArgs := pinyin.NewArgs()
+	pinyinArgs.Style = pinyin.Normal
+
+	// 获取所有汉字的拼音
+	chineseText := string(chineseChars)
+	pinyinResult := pinyin.Pinyin(chineseText, pinyinArgs)
+
+	if len(pinyinResult) < 2 {
+		return nil
+	}
+
+	// 生成不同长度的完整拼音前缀
+	// 从2个汉字开始，到全部汉字
+	variations := make([]string, 0)
+
+	var fullPinyin strings.Builder
+	for i, py := range pinyinResult {
+		if len(py) > 0 {
+			fullPinyin.WriteString(py[0])
+		}
+
+		// 从第2个汉字开始记录（至少2个汉字的拼音才有意义）
+		if i >= 1 {
+			variations = append(variations, fullPinyin.String())
+		}
+	}
+
+	// 按长度降序排列，优先匹配长的前缀（更精确）
+	for i, j := 0, len(variations)-1; i < j; i, j = i+1, j-1 {
+		variations[i], variations[j] = variations[j], variations[i]
+	}
+
+	return variations
+}
+
+// getAppNamePinyinAbbreviations 获取应用名称拼音的音节缩写变体
+// 场景：爱客宝 -> aikebao，但域名可能是 aikbao（省略中间韵母）
+// 生成变体：
+//   - 首字完整 + 中间字声母 + 尾字完整: ai + k + bao = aikbao
+//   - 首字完整 + 后续字声母: ai + k + b = aikb
+//   - 各种声母+韵母组合
+func (da *DomainAnalyzer) getAppNamePinyinAbbreviations(appName string) []string {
+	if appName == "" {
+		return nil
+	}
+
+	// 过滤非中文字符，只保留中文
+	var chineseChars []rune
+	for _, r := range appName {
+		if r >= 0x4e00 && r <= 0x9fff {
+			chineseChars = append(chineseChars, r)
+		}
+	}
+
+	if len(chineseChars) < 2 {
+		return nil
+	}
+
+	// 配置拼音转换参数
+	pinyinArgs := pinyin.NewArgs()
+	pinyinArgs.Style = pinyin.Normal
+
+	// 获取每个汉字的拼音
+	chineseText := string(chineseChars)
+	pinyinResult := pinyin.Pinyin(chineseText, pinyinArgs)
+
+	if len(pinyinResult) < 2 {
+		return nil
+	}
+
+	// 提取每个字的拼音和声母
+	type syllable struct {
+		full    string // 完整拼音，如 "ke"
+		initial string // 声母，如 "k"
+	}
+	syllables := make([]syllable, 0, len(pinyinResult))
+	for _, py := range pinyinResult {
+		if len(py) > 0 && len(py[0]) > 0 {
+			full := py[0]
+			initial := string(full[0]) // 声母是第一个字母
+			syllables = append(syllables, syllable{full: full, initial: initial})
+		}
+	}
+
+	if len(syllables) < 2 {
+		return nil
+	}
+
+	variations := make(map[string]bool)
+
+	// 变体1: 首字完整 + 中间字声母 + 尾字完整
+	// 爱客宝 -> ai + k + bao = aikbao
+	if len(syllables) >= 3 {
+		var sb strings.Builder
+		sb.WriteString(syllables[0].full) // 首字完整
+		for i := 1; i < len(syllables)-1; i++ {
+			sb.WriteString(syllables[i].initial) // 中间字声母
+		}
+		sb.WriteString(syllables[len(syllables)-1].full) // 尾字完整
+		if sb.Len() >= 4 {
+			variations[sb.String()] = true
+		}
+	}
+
+	// 变体2: 首字完整 + 后续字声母
+	// 爱客宝 -> ai + k + b = aikb
+	{
+		var sb strings.Builder
+		sb.WriteString(syllables[0].full)
+		for i := 1; i < len(syllables); i++ {
+			sb.WriteString(syllables[i].initial)
+		}
+		if sb.Len() >= 4 {
+			variations[sb.String()] = true
+		}
+	}
+
+	// 变体3: 首字完整 + 第二字完整 + 后续声母（针对4字及以上）
+	// 爱客联盟 -> ai + ke + l + m = aikelm
+	if len(syllables) >= 3 {
+		var sb strings.Builder
+		sb.WriteString(syllables[0].full)
+		sb.WriteString(syllables[1].full)
+		for i := 2; i < len(syllables); i++ {
+			sb.WriteString(syllables[i].initial)
+		}
+		if sb.Len() >= 4 {
+			variations[sb.String()] = true
+		}
+	}
+
+	// 变体4: 前两字完整 + 尾字完整（省略中间）
+	// 爱客联盟 -> ai + ke + meng = aikemeng (省略"联")
+	if len(syllables) >= 4 {
+		var sb strings.Builder
+		sb.WriteString(syllables[0].full)
+		sb.WriteString(syllables[1].full)
+		sb.WriteString(syllables[len(syllables)-1].full)
+		if sb.Len() >= 4 {
+			variations[sb.String()] = true
+		}
+	}
+
+	// 变体5: 每个字的声母+第一个韵母字母（更紧凑的缩写）
+	// 爱客宝 -> ai + ke + bao -> a + k + b + ao? 不太常见，跳过
+
+	// 转换为切片返回
+	result := make([]string, 0, len(variations))
+	for v := range variations {
+		result = append(result, v)
+	}
+
+	// 按长度降序排列
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if len(result[j]) > len(result[i]) {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+
+	return result
 }

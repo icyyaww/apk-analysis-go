@@ -60,22 +60,20 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		pageSize = 100
 	}
 
-	// 判断是否有额外过滤条件（省份、ISP、备案状态）
-	hasExtraFilter := statusFilter != "" || provinceFilter != "" || ispFilter != "" || beianStatusFilter != ""
+	// 判断是否有需要内存过滤的条件（省份、ISP、备案状态需要内存过滤）
+	hasMemoryFilter := provinceFilter != "" || ispFilter != "" || beianStatusFilter != ""
 
 	var tasks []*domain.Task
 	var total int64
 
-	if hasExtraFilter {
-		// 有额外过滤条件时，查询更多数据再在内存中过滤
-		queryLimit := pageSize * 10
-		if queryLimit > 1000 {
-			queryLimit = 1000
-		}
-		tasks, _, err = h.taskService.ListTasksWithExcludeStatus(c.Request.Context(), 1, queryLimit, excludeStatus)
+	if hasMemoryFilter {
+		// 有省份/ISP/备案过滤时，需要查询所有符合状态条件的数据再在内存中过滤
+		// 查询上限设为 5000 条，避免内存溢出
+		queryLimit := 5000
+		tasks, _, err = h.taskService.ListTasksWithStatusFilter(c.Request.Context(), 1, queryLimit, excludeStatus, statusFilter)
 	} else {
-		// 仅有 exclude_status 时，使用数据库分页
-		tasks, total, err = h.taskService.ListTasksWithExcludeStatus(c.Request.Context(), page, pageSize, excludeStatus)
+		// 仅有 status 和 exclude_status 时，使用数据库分页
+		tasks, total, err = h.taskService.ListTasksWithStatusFilter(c.Request.Context(), page, pageSize, excludeStatus, statusFilter)
 	}
 
 	if err != nil {
@@ -86,9 +84,9 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		return
 	}
 
-	// 如果有额外过滤条件，需要在内存中过滤
+	// 如果有内存过滤条件，需要在内存中过滤
 	var filteredTasks []*domain.Task
-	if hasExtraFilter {
+	if hasMemoryFilter {
 		for _, task := range tasks {
 			// 1. 任务状态过滤
 			if statusFilter != "" && string(task.Status) != statusFilter {
@@ -276,6 +274,30 @@ func (h *TaskHandler) BatchDeleteTasks(c *gin.Context) {
 		"success":       true,
 		"message":       "批量删除成功",
 		"deleted_count": deletedCount,
+	})
+}
+
+// ListQueuedTasks 获取所有排队中的任务（不分页）
+// GET /api/tasks/queued
+func (h *TaskHandler) ListQueuedTasks(c *gin.Context) {
+	tasks, err := h.taskService.ListQueuedTasks(c.Request.Context())
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to list queued tasks")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "获取排队任务列表失败",
+		})
+		return
+	}
+
+	// 转换为响应格式
+	var taskResponses []gin.H
+	for _, task := range tasks {
+		taskResponses = append(taskResponses, h.taskToResponse(task))
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tasks": taskResponses,
+		"total": len(tasks),
 	})
 }
 

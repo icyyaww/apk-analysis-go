@@ -118,6 +118,7 @@ func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMoni
 
 		// 任务管理
 		v1.GET("/tasks", taskHandler.ListTasks)
+		v1.GET("/tasks/queued", taskHandler.ListQueuedTasks) // 获取所有排队任务（不分页）
 		v1.DELETE("/tasks/batch", taskHandler.BatchDeleteTasks) // 批量删除必须在 :id 之前
 		v1.GET("/tasks/:id", taskHandler.GetTask)
 		v1.DELETE("/tasks/:id", taskHandler.DeleteTask)
