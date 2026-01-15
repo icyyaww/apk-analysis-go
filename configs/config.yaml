@@ -1,0 +1,121 @@
+server:
+  port: 8080
+  mode: release  # debug, release
+
+database:
+  type: mysql  # mysql, sqlite
+  host: rm-cn-x0r388op0000ltuo.rwlb.zhangbei.rds.aliyuncs.com
+  port: 3306
+  user: root
+  password: Zr@Fs0522%^
+  db_name: apk_analysis_go
+
+redis:
+  host: localhost  # 本地开发用 localhost，容器内用 redis
+  port: 6379
+  password: ""
+  db: 0
+
+rabbitmq:
+  host: localhost  # 本地开发用 localhost，容器内用 rabbitmq
+  port: 5672
+  user: user
+  password: pass
+  vhost: /
+  queue: apk_tasks
+
+# ============================================
+# 静态分析配置 (Hybrid: Go + Androguard)
+# ============================================
+static_analysis:
+  # 混合分析器配置
+  # 使用 Androguard 从 DEX 字节码中提取 URL（比资源文件扫描更全面）
+  hybrid:
+    enabled: true  # 启用混合分析 (Go快速分析 + Python Androguard DEX提取)
+    python_path: /usr/bin/python3
+    script_path: /app/scripts/analyze_apk.py  # Androguard DEX 分析脚本
+    use_process_pool: false  # 直接调用 Python 脚本，避免进程池开销
+    process_pool_size: 3
+
+    # 深度分析决策配置
+    force_deep_analysis: true  # 建议设为 true，始终进行 DEX 深度分析以获取完整 URL
+
+    # 深度分析决策阈值（仅在 force_deep_analysis=false 时生效）
+    deep_analysis_threshold:
+      file_size_mb: 10  # 超过10MB的APK使用深度分析
+      activity_count: 20  # 超过20个Activity的APK使用深度分析
+      enable_for_high_priority_packages: true  # 高优先级包（如银行、支付类）自动使用深度分析
+
+ai:
+  enabled: true
+  api_key: 781955406bb5195f9d9c41145dfe76b1.Z69DHCOqxT14om0D
+  model: glm-4v-flash
+  max_actions: 20
+
+# ============================================
+# 应用启动智能引导配置
+# ============================================
+app_guidance:
+  enabled: true                    # 是否启用应用启动引导
+  max_pages: 15                    # 最大引导页面数
+  page_timeout: 8                  # 单页面超时时间（秒）
+  stability_wait: 2                # 页面稳定等待时间（秒）
+  max_same_page_retries: 3         # 同一页面最大重试次数
+
+  # 登录页面处理策略
+  login_handling:
+    try_skip_first: true           # 优先尝试跳过登录
+    max_login_attempts: 3          # 最大登录尝试次数
+    one_click_login_enabled: true  # 是否尝试一键登录（微信/支付宝等）
+
+adb:
+  target: android-emulator:5555
+  timeout: 30  # seconds
+
+mitmproxy:
+  host: mitmproxy
+  port: 8082
+
+worker:
+  concurrency: 1  # Worker 数量（设置为设备数量，避免多个任务同时竞争设备）
+  queue_size: 100  # 任务队列大小
+
+log:
+  level: info  # debug, info, warn, error
+  format: text  # json, text
+
+# 备案查询配置 (站长之家API)
+beian:
+  enabled: true  # 是否启用备案查询
+  api_key: "apiuser_quantity_01d15bb093168be73957f3aa3f3f4a4a_95a91a84ca674326ad6cd8af533c05ee"
+  api_url: "http://openapiu67.chinaz.net/v1/1001/icpappunit"
+  api_version: "1.0"
+  timeout: 70     # seconds (建议不低于60秒)
+
+# ============================================
+# 恶意检测配置 (GIT-GuardNet 模型)
+# ============================================
+malware:
+  enabled: true  # 是否启用恶意检测
+  server_url: http://localhost:5000  # 推理服务地址 (同容器内的 Python 服务)
+  timeout: 120  # 请求超时时间 (秒)
+
+  # 默认使用的模型
+  models:
+    - drebin    # Drebin 模型 (二分类)
+    - mh100k    # MH-100K 模型 (大规模特征)
+    - cicmaldroid # CICMalDroid 模型 (15分类家族识别)
+
+  # 特征提取选项
+  extract_graph_features: true     # 是否提取图特征 (函数调用图)
+  extract_temporal_features: false # 是否提取时序特征 (需要动态分析日志)
+  use_ensemble: false              # 是否使用集成预测 (多模型投票)
+
+  # 重试配置
+  max_retries: 3   # 最大重试次数
+  retry_delay: 1   # 重试间隔 (秒)
+
+# 目录配置
+apk_dir: ./inbound_apks
+result_dir: ./results
+data_dir: ./data
