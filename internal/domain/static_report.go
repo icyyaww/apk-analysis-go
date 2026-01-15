@@ -69,6 +69,15 @@ type TaskStaticReport struct {
 	// 决策信息
 	NeedsDeepAnalysisReason string `gorm:"type:varchar(255)" json:"needs_deep_analysis_reason,omitempty"`
 
+	// 壳检测相关字段
+	IsPacked              bool    `gorm:"default:false" json:"is_packed"`
+	PackerName            string  `gorm:"type:varchar(100)" json:"packer_name,omitempty"`
+	PackerType            string  `gorm:"type:varchar(50)" json:"packer_type,omitempty"`    // native/dex_encrypt/vmp/unknown
+	PackerConfidence      float64 `gorm:"type:decimal(3,2)" json:"packer_confidence,omitempty"` // 0.00-1.00
+	PackerIndicators      string  `gorm:"type:text" json:"packer_indicators,omitempty"`    // JSON 数组
+	NeedsDynamicUnpacking bool    `gorm:"default:false" json:"needs_dynamic_unpacking"`
+	PackerDetectionDurationMs int `gorm:"type:int" json:"packer_detection_duration_ms,omitempty"`
+
 	// 时间戳
 	AnalyzedAt *time.Time `json:"analyzed_at,omitempty"`
 	CreatedAt  time.Time  `gorm:"not null" json:"created_at"`

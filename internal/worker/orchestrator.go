@@ -22,8 +22,11 @@ import (
 	"github.com/apk-analysis/apk-analysis-go/internal/filter"
 	"github.com/apk-analysis/apk-analysis-go/internal/flow"
 	"github.com/apk-analysis/apk-analysis-go/internal/frida"
+	"github.com/apk-analysis/apk-analysis-go/internal/malware"
+	"github.com/apk-analysis/apk-analysis-go/internal/packer"
 	"github.com/apk-analysis/apk-analysis-go/internal/repository"
 	"github.com/apk-analysis/apk-analysis-go/internal/staticanalysis"
+	"github.com/apk-analysis/apk-analysis-go/internal/unpacker"
 	"github.com/sirupsen/logrus"
 )
 
@@ -33,7 +36,11 @@ type Orchestrator struct {
 	aiAnalyzer         *ai.Analyzer
 	taskRepo           repository.TaskRepository
 	staticReportRepo   repository.StaticReportRepository
+	malwareRepo        repository.MalwareRepository // 恶意检测结果仓库
 	hybridAnalyzer     *staticanalysis.HybridAnalyzer
+	malwareDetector    *malware.Detector             // 恶意检测器
+	packerDetector     *packer.Detector              // 壳检测器
+	dynamicUnpacker    *unpacker.DynamicUnpacker     // 动态脱壳器
 	logger             *logrus.Logger
 	resultsDir         string
 	mitmProxyHost      string // mitmproxy容器主机名
@@ -41,6 +48,8 @@ type Orchestrator struct {
 	aiEnabled          bool
 	hybridEnabled      bool
 	fridaEnabled       bool
+	unpackingEnabled   bool // 是否启用动态脱壳
+	malwareEnabled     bool // 是否启用恶意检测
 	// AI智能交互相关字段
 	aiInteractionEnabled bool
 	interactionEngine    *ai.InteractionEngine
@@ -70,10 +79,12 @@ type AIActionData struct {
 // NewOrchestrator 创建编排器
 // deviceMgr: 设备管理器（必须已初始化并添加设备）
 // mitmProxyHost: mitmproxy容器主机名（如 "apk-analysis-mitmproxy"）
+// malwareRepo: 恶意检测结果仓库（可选，传 nil 则禁用恶意检测存储）
 func NewOrchestrator(
 	deviceMgr *device.DeviceManager,
 	taskRepo repository.TaskRepository,
 	staticReportRepo repository.StaticReportRepository,
+	malwareRepo repository.MalwareRepository,
 	cfg *config.Config,
 	logger *logrus.Logger,
 	resultsDir string,
@@ -110,6 +121,55 @@ func NewOrchestrator(
 		}
 	}
 
+	// 初始化壳检测器
+	packerDetector := packer.NewDetector(logger)
+	logger.Info("✅ Packer detector initialized")
+
+	// 初始化动态脱壳器
+	dynamicUnpacker := unpacker.NewDynamicUnpacker(logger, "./scripts/unpacker")
+	unpackingEnabled := true // 默认启用动态脱壳
+	logger.Info("✅ Dynamic unpacker initialized")
+
+	// 初始化恶意检测器
+	var malwareDetector *malware.Detector
+	malwareEnabled := cfg.Malware.Enabled
+	if malwareEnabled {
+		malwareCfg := &malware.DetectorConfig{
+			ServerURL:               cfg.Malware.ServerURL,
+			Timeout:                 time.Duration(cfg.Malware.Timeout) * time.Second,
+			DefaultModels:           cfg.Malware.Models,
+			ExtractGraphFeatures:    cfg.Malware.ExtractGraphFeatures,
+			ExtractTemporalFeatures: cfg.Malware.ExtractTemporalFeatures,
+			UseEnsemble:             cfg.Malware.UseEnsemble,
+			MaxRetries:              cfg.Malware.MaxRetries,
+			RetryDelay:              time.Duration(cfg.Malware.RetryDelay) * time.Second,
+		}
+		// 使用默认值填充空配置
+		if malwareCfg.ServerURL == "" {
+			malwareCfg.ServerURL = "http://localhost:5000"
+		}
+		if malwareCfg.Timeout == 0 {
+			malwareCfg.Timeout = 120 * time.Second
+		}
+		if len(malwareCfg.DefaultModels) == 0 {
+			malwareCfg.DefaultModels = []string{"drebin", "mh100k"}
+		}
+		if malwareCfg.MaxRetries == 0 {
+			malwareCfg.MaxRetries = 3
+		}
+		if malwareCfg.RetryDelay == 0 {
+			malwareCfg.RetryDelay = 1 * time.Second
+		}
+
+		malwareDetector = malware.NewDetector(malwareCfg, logger)
+		logger.WithFields(logrus.Fields{
+			"server_url": malwareCfg.ServerURL,
+			"models":     malwareCfg.DefaultModels,
+		}).Info("✅ Malware detector initialized")
+	} else {
+		logger.Info("ℹ️ Malware detection disabled in config (malware.enabled=false)")
+	}
+
 	// AI智能交互初始化 - 从配置文件读取
 	aiInteractionEnabled := cfg.AI.Enabled
 	var interactionEngine *ai.InteractionEngine
@@ -134,6 +194,7 @@ func NewOrchestrator(
 	logger.WithFields(logrus.Fields{
 		"devices":         deviceMgr.GetDeviceCount(),
 		"hybrid_enabled":  hybridEnabled,
+		"malware_enabled": malwareEnabled,
 		"ai_enabled":      aiAnalyzer.IsEnabled(),
 		"ai_interaction":  aiInteractionEnabled,
 		"frida_enabled":   true,
@@ -144,7 +205,11 @@ func NewOrchestrator(
 		aiAnalyzer:           aiAnalyzer,
 		taskRepo:             taskRepo,
 		staticReportRepo:     staticReportRepo,
+		malwareRepo:          malwareRepo,
 		hybridAnalyzer:       hybridAnalyzer,
+		malwareDetector:      malwareDetector,
+		packerDetector:       packerDetector,
+		dynamicUnpacker:      dynamicUnpacker,
 		logger:               logger,
 		resultsDir:           resultsDir,
 		mitmProxyHost:        mitmProxyHost,
@@ -152,6 +217,8 @@ func NewOrchestrator(
 		aiEnabled:            aiAnalyzer.IsEnabled(),
 		hybridEnabled:        hybridEnabled,
 		fridaEnabled:         true,
+		unpackingEnabled:     unpackingEnabled,
+		malwareEnabled:       malwareEnabled,
 		aiInteractionEnabled: aiInteractionEnabled,
 		interactionEngine:    interactionEngine,
 		smartClicker:         smartClicker,
@@ -294,6 +361,65 @@ func (o *Orchestrator) ExecuteTask(ctx context.Context, taskID, apkPath string) 
 					o.logger.WithField("package", packageName).Info("Frida SSL unpinning injected successfully")
 				}
 			}
+		}
+	}
+
+	// 2.6. 壳检测与动态脱壳
+	if o.unpackingEnabled && o.packerDetector != nil {
+		if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusInstalling, "检测应用加壳状态", 27); err != nil {
+			return err
+		}
+
+		// 执行壳检测
+		packerInfo := o.packerDetector.Detect(ctx, apkPath)
+
+		if packerInfo.IsPacked {
+			o.logger.WithFields(logrus.Fields{
+				"packer_name": packerInfo.PackerName,
+				"packer_type": packerInfo.PackerType,
+				"confidence":  packerInfo.Confidence,
+				"can_unpack":  packerInfo.CanUnpack,
+			}).Warn("⚠️ Packer detected! Attempting dynamic unpacking")
+
+			if packerInfo.CanUnpack && o.dynamicUnpacker != nil {
+				if err := o.updateTaskStatus(ctx, taskID, domain.TaskStatusInstalling, "执行动态脱壳", 28); err != nil {
+					return err
+				}
+
+				// 创建脱壳输出目录
+				unpackDir := filepath.Join(o.resultsDir, taskID, "unpacked")
+
+				// 执行动态脱壳
+				unpackResult, err := o.dynamicUnpacker.Unpack(ctx, unpacker.UnpackRequest{
+					TaskID:      taskID,
+					PackageName: packageName,
+					ADBTarget:   dev.ADBTarget,
+					FridaHost:   dev.FridaHost,
+					PackerInfo:  packerInfo,
+					OutputDir:   unpackDir,
+				})
+
+				if err != nil {
+					o.logger.WithError(err).Warn("Dynamic unpacking failed, continuing with packed APK")
+				} else if unpackResult.Success {
+					o.logger.WithFields(logrus.Fields{
+						"dex_count":   unpackResult.DEXCount,
+						"merged_dex":  unpackResult.MergedDEXPath,
+						"duration_ms": unpackResult.Duration,
+					}).Info("✅ Dynamic unpacking succeeded")
+
+					// 脱壳成功后，重新执行深度静态分析
+					if o.hybridEnabled && unpackResult.MergedDEXPath != "" {
+						o.logger.Info("Re-analyzing unpacked DEX...")
+						// TODO: 实现脱壳后重新分析的逻辑
+						// o.reanalyzeUnpackedDEX(ctx, taskID, unpackResult.MergedDEXPath)
+					}
+				}
+			} else {
+				o.logger.WithField("packer", packerInfo.PackerName).Warn("Packer detected but automatic unpacking not supported")
+			}
+		} else {
+			o.logger.Info("No packer detected, skipping dynamic unpacking")
 		}
 	}
 
@@ -1671,25 +1797,34 @@ func (o *Orchestrator) performAIInteraction(
 	return true, actions // 成功,返回actions数据
 }
 
-// runStaticAnalysis 执行静态分析（Hybrid 分析器）
+// runStaticAnalysis 执行静态分析（Hybrid 分析器）和恶意检测
 // 异步执行，不阻塞动态分析流程
 func (o *Orchestrator) runStaticAnalysis(ctx context.Context, taskID, apkPath, packageName string) error {
 	o.logger.WithFields(logrus.Fields{
-		"task_id":        taskID,
-		"hybrid_enabled": o.hybridEnabled,
-	}).Info("Starting static analysis (async mode)")
-
-	if !o.hybridEnabled {
-		o.logger.Warn("Hybrid analyzer not enabled, skipping static analysis")
-		return nil
-	}
+		"task_id":         taskID,
+		"hybrid_enabled":  o.hybridEnabled,
+		"malware_enabled": o.malwareEnabled,
+	}).Info("Starting static analysis and malware detection (async mode)")
 
 	// 异步执行 Hybrid 分析
-	go func() {
-		if err := o.runHybridAnalysis(context.Background(), taskID, apkPath, packageName); err != nil {
-			o.logger.WithError(err).Error("❌ Hybrid analysis failed in async mode")
-		}
-	}()
+	if o.hybridEnabled {
+		go func() {
+			if err := o.runHybridAnalysis(context.Background(), taskID, apkPath, packageName); err != nil {
+				o.logger.WithError(err).Error("❌ Hybrid analysis failed in async mode")
+			}
+		}()
+	} else {
+		o.logger.Warn("Hybrid analyzer not enabled, skipping static analysis")
+	}
+
+	// 异步执行恶意检测（与 Hybrid 分析并行）
+	if o.malwareEnabled {
+		go func() {
+			if err := o.runMalwareDetection(context.Background(), taskID, apkPath); err != nil {
+				o.logger.WithError(err).Error("❌ Malware detection failed in async mode")
+			}
+		}()
+	}
 
 	return nil // 立即返回，不阻塞
 }
@@ -1747,6 +1882,88 @@ func (o *Orchestrator) runHybridAnalysis(ctx context.Context, taskID, apkPath, p
 		// 检查是否应该触发域名分析（需要静态+动态都完成）
 		o.checkAndTriggerDomainAnalysis(ctx, taskID, nil) // 传 nil 让它从数据库重新加载最新状态
 	}
+
+	return nil
+}
+
+// runMalwareDetection 执行恶意检测（异步执行，与静态分析并行）
+func (o *Orchestrator) runMalwareDetection(ctx context.Context, taskID, apkPath string) error {
+	if !o.malwareEnabled || o.malwareDetector == nil {
+		o.logger.WithField("task_id", taskID).Debug("Malware detection disabled, skipping")
+		return nil
+	}
+
+	startTime := time.Now()
+	o.logger.WithField("task_id", taskID).Info("Starting malware detection")
+
+	// 检查服务可用性
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := o.malwareDetector.CheckAvailability(checkCtx); err != nil {
+		o.logger.WithError(err).Warn("Malware detection service unavailable, skipping")
+		// 保存跳过状态
+		if o.malwareRepo != nil {
+			result := &malware.TaskMalwareResult{
+				TaskID:       taskID,
+				Status:       malware.DetectionStatusSkipped,
+				ErrorMessage: fmt.Sprintf("service unavailable: %v", err),
+				CreatedAt:    time.Now(),
+			}
+			o.malwareRepo.Upsert(ctx, result)
+		}
+		return nil
+	}
+
+	// 创建初始记录（分析中状态）
+	if o.malwareRepo != nil {
+		initialResult := &malware.TaskMalwareResult{
+			TaskID:    taskID,
+			Status:    malware.DetectionStatusRunning,
+			CreatedAt: time.Now(),
+		}
+		if err := o.malwareRepo.Upsert(ctx, initialResult); err != nil {
+			o.logger.WithError(err).Warn("Failed to create initial malware result record")
+		}
+	}
+
+	// 执行恶意检测
+	result, err := o.malwareDetector.Detect(ctx, apkPath,
+		malware.WithTaskID(taskID),
+		malware.WithGraphFeatures(true),
+	)
+
+	if err != nil {
+		o.logger.WithError(err).Error("Malware detection failed")
+		// 保存失败状态
+		if o.malwareRepo != nil && result != nil {
+			result.Status = malware.DetectionStatusFailed
+			if result.ErrorMessage == "" {
+				result.ErrorMessage = err.Error()
+			}
+			o.malwareRepo.Upsert(ctx, result)
+		}
+		return err
+	}
+
+	// 保存检测结果
+	if o.malwareRepo != nil && result != nil {
+		if err := o.malwareRepo.Upsert(ctx, result); err != nil {
+			o.logger.WithError(err).Error("Failed to save malware detection result")
+			return err
+		}
+	}
+
+	duration := time.Since(startTime)
+	o.logger.WithFields(logrus.Fields{
+		"task_id":             taskID,
+		"is_malware":          result.IsMalware,
+		"confidence":          result.Confidence,
+		"malware_probability": result.MalwareProbability,
+		"benign_probability":  result.BenignProbability,
+		"predicted_family":    result.PredictedFamily,
+		"duration_ms":         duration.Milliseconds(),
+		"total_time_ms":       result.TotalTimeMs,
+	}).Info("✅ Malware detection completed")
 
 	return nil
 }

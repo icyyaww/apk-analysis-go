@@ -6,6 +6,7 @@ import (
 
 	"github.com/apk-analysis/apk-analysis-go/internal/config"
 	"github.com/apk-analysis/apk-analysis-go/internal/domain"
+	"github.com/apk-analysis/apk-analysis-go/internal/malware"
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/sqlite"
@@ -68,6 +69,7 @@ func autoMigrate(db *gorm.DB, log *logrus.Logger) error {
 		&domain.TaskAppDomain{},
 		&domain.TaskAILog{},
 		&domain.ThirdPartySDKRule{},
+		&malware.TaskMalwareResult{},
 	)
 
 	if err != nil {

@@ -16,7 +16,8 @@ services:
     container_name: apk-analysis-server
     privileged: true
     ports:
-      - "8080:8080"
+      - "8080:8080"   # Go API 服务
+      - "5000:5000"   # Python 恶意检测服务
     environment:
       - GIN_MODE=release
       - DB_TYPE=mysql
@@ -50,6 +51,7 @@ services:
       - ./configs:/app/configs:ro
       - ./scripts:/app/scripts:ro
       - ./web:/app/web:ro
+      - ./models:/app/models:ro  # 恶意检测模型（只读挂载）
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/api/health"]
       interval: 30s

@@ -10,6 +10,7 @@ type Config struct {
 	Redis          RedisConfig          `mapstructure:"redis"`
 	RabbitMQ       RabbitMQConfig       `mapstructure:"rabbitmq"`
 	StaticAnalysis StaticAnalysisConfig `mapstructure:"static_analysis"`
+	Malware        MalwareConfig        `mapstructure:"malware"`
 	AI             AIConfig             `mapstructure:"ai"`
 	ADB            ADBConfig            `mapstructure:"adb"`
 	Mitmproxy      MitmproxyConfig      `mapstructure:"mitmproxy"`
@@ -121,12 +122,43 @@ type BeianConfig struct {
 	Timeout    int    `mapstructure:"timeout"` // seconds
 }
 
+// MalwareConfig 恶意检测配置
+type MalwareConfig struct {
+	Enabled                 bool     `mapstructure:"enabled"`
+	ServerURL               string   `mapstructure:"server_url"`
+	Timeout                 int      `mapstructure:"timeout"`                   // seconds
+	Models                  []string `mapstructure:"models"`                    // 使用的模型列表: drebin, mh100k, cicmaldroid
+	ExtractGraphFeatures    bool     `mapstructure:"extract_graph_features"`    // 是否提取图特征
+	ExtractTemporalFeatures bool     `mapstructure:"extract_temporal_features"` // 是否提取时序特征
+	UseEnsemble             bool     `mapstructure:"use_ensemble"`              // 是否使用集成预测
+	MaxRetries              int      `mapstructure:"max_retries"`               // 最大重试次数
+	RetryDelay              int      `mapstructure:"retry_delay"`               // 重试间隔(秒)
+}
+
 func Load(path string) (*Config, error) {
 	viper.SetConfigFile(path)
 	viper.SetConfigType("yaml")
 
-	// 环境变量覆盖
+	// 环境变量覆盖（支持嵌套配置）
 	viper.AutomaticEnv()
+
+	// 绑定环境变量到嵌套配置路径
+	// RabbitMQ
+	viper.BindEnv("rabbitmq.host", "RABBITMQ_HOST")
+	viper.BindEnv("rabbitmq.port", "RABBITMQ_PORT")
+	viper.BindEnv("rabbitmq.user", "RABBITMQ_USER")
+	viper.BindEnv("rabbitmq.password", "RABBITMQ_PASS")
+
+	// Redis
+	viper.BindEnv("redis.host", "REDIS_HOST")
+	viper.BindEnv("redis.port", "REDIS_PORT")
+
+	// Database
+	viper.BindEnv("database.host", "MYSQL_HOST")
+	viper.BindEnv("database.port", "MYSQL_PORT")
+	viper.BindEnv("database.user", "MYSQL_USER")
+	viper.BindEnv("database.password", "MYSQL_PASS")
+	viper.BindEnv("database.db_name", "MYSQL_DB")
 
 	if err := viper.ReadInConfig(); err != nil {
 		return nil, err

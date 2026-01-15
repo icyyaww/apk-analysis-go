@@ -109,6 +109,7 @@ func (r *taskRepo) FindByID(ctx context.Context, id string) (*domain.Task, error
 		Preload("DomainAnalysis").
 		Preload("AppDomains").
 		Preload("AILogs").
+		Preload("MalwareResult").
 		First(&task, "id = ?", id).Error
 
 	if err != nil {
@@ -144,6 +145,10 @@ func (r *taskRepo) List(ctx context.Context, limit int) ([]*domain.Task, error) 
 		Preload("Activities", func(db *gorm.DB) *gorm.DB {
 			// 加载Activity详情用于提取动态分析URL中的IP
 			return db.Select("task_id", "activity_details_json")
+		}).
+		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
+			// 恶意检测结果：只选择状态和核心字段
+			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
 		}).
 		// 不加载大数据量的关联表:
 		// - AILogs: 数量可能很多
@@ -183,6 +188,10 @@ func (r *taskRepo) ListWithPagination(ctx context.Context, page int, pageSize in
 		Preload("Activities", func(db *gorm.DB) *gorm.DB {
 			// 加载Activity详情用于提取动态分析URL中的IP
 			return db.Select("task_id", "activity_details_json")
+		}).
+		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
+			// 恶意检测结果：只选择状态和核心字段
+			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
 		}).
 		Order("created_at DESC").
 		Offset(offset).
@@ -789,6 +798,9 @@ func (r *taskRepo) ListWithExcludeStatus(ctx context.Context, page int, pageSize
 		Preload("Activities", func(db *gorm.DB) *gorm.DB {
 			return db.Select("task_id", "activity_details_json")
 		}).
+		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
+		}).
 		// 按状态优先级排序，然后按完成时间倒序（最新完成的在前）
 		Order("CASE status WHEN 'running' THEN 1 WHEN 'installing' THEN 2 WHEN 'collecting' THEN 3 WHEN 'completed' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END, completed_at DESC, created_at DESC").
 		Offset(offset).
@@ -843,6 +855,9 @@ func (r *taskRepo) ListWithStatusFilter(ctx context.Context, page int, pageSize 
 		}).
 		Preload("Activities", func(db *gorm.DB) *gorm.DB {
 			return db.Select("task_id", "activity_details_json")
+		}).
+		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
 		}).
 		// 按完成时间倒序（最新的在前）
 		Order("completed_at DESC, created_at DESC").
@@ -907,6 +922,9 @@ func (r *taskRepo) ListWithSearch(ctx context.Context, page int, pageSize int, e
 		}).
 		Preload("Activities", func(db *gorm.DB) *gorm.DB {
 			return db.Select("task_id", "activity_details_json")
+		}).
+		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
 		}).
 		// 按完成时间倒序（最新的在前）
 		Order("completed_at DESC, created_at DESC").

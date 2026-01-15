@@ -7,12 +7,14 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/apk-analysis/apk-analysis-go/internal/packer"
 	"github.com/sirupsen/logrus"
 )
 
 // HybridAnalyzer 混合分析器（Go + Python）
 type HybridAnalyzer struct {
 	fastAnalyzer      *FastAnalyzer
+	packerDetector    *packer.Detector // 壳检测器
 	pythonPath        string
 	scriptPath        string
 	processPool       *ProcessPool
@@ -34,6 +36,7 @@ type HybridConfig struct {
 func NewHybridAnalyzer(config *HybridConfig, logger *logrus.Logger) (*HybridAnalyzer, error) {
 	ha := &HybridAnalyzer{
 		fastAnalyzer:      NewFastAnalyzer(logger),
+		packerDetector:    packer.NewDetector(logger), // 初始化壳检测器
 		pythonPath:        config.PythonPath,
 		scriptPath:        config.ScriptPath,
 		logger:            logger,
@@ -80,6 +83,26 @@ func (ha *HybridAnalyzer) Analyze(ctx context.Context, apkPath string) (*Analysi
 	result.BasicInfo = basicInfo
 	result.FastAnalysisDuration = time.Since(fastStart).Milliseconds()
 
+	// Step 1.5: 壳检测
+	ha.logger.Info("Starting packer detection...")
+	packerStart := time.Now()
+
+	packerInfo := ha.packerDetector.Detect(ctx, apkPath)
+	result.PackerInfo = packerInfo
+	result.PackerDetectionDuration = time.Since(packerStart).Milliseconds()
+
+	if packerInfo.IsPacked {
+		ha.logger.WithFields(logrus.Fields{
+			"packer_name": packerInfo.PackerName,
+			"packer_type": packerInfo.PackerType,
+			"confidence":  packerInfo.Confidence,
+			"can_unpack":  packerInfo.CanUnpack,
+		}).Warn("⚠️ Packer detected! Dynamic unpacking may be required")
+		result.NeedsDynamicUnpacking = packerInfo.CanUnpack
+	} else {
+		ha.logger.Info("No packer detected")
+	}
+
 	// Step 2: 判断是否需要深度分析
 	var needDeep bool
 	var reason string
@@ -124,6 +147,7 @@ func (ha *HybridAnalyzer) Analyze(ctx context.Context, apkPath string) (*Analysi
 		"duration_ms":  result.AnalysisDuration,
 		"fast_ms":      result.FastAnalysisDuration,
 		"deep_ms":      result.DeepAnalysisDuration,
+		"packer_ms":    result.PackerDetectionDuration,
 	}
 
 	if result.DeepAnalysis != nil {
@@ -132,6 +156,15 @@ func (ha *HybridAnalyzer) Analyze(ctx context.Context, apkPath string) (*Analysi
 	} else {
 		logFields["urls_found"] = 0
 		logFields["domains_found"] = 0
+	}
+
+	// 添加壳检测结果
+	if result.PackerInfo != nil && result.PackerInfo.IsPacked {
+		logFields["is_packed"] = true
+		logFields["packer_name"] = result.PackerInfo.PackerName
+		logFields["needs_unpack"] = result.NeedsDynamicUnpacking
+	} else {
+		logFields["is_packed"] = false
 	}
 
 	ha.logger.WithFields(logFields).Info("Analysis completed")

@@ -348,6 +348,223 @@
             margin-bottom: 16px;
         }
 
+        /* Security Detection Section */
+        .security-section {
+            background: white;
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+            margin-bottom: 20px;
+        }
+
+        .verdict-card {
+            text-align: center;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+        }
+
+        .verdict-benign {
+            background: linear-gradient(135deg, #DCFCE7 0%, #BBF7D0 100%);
+            border: 2px solid #22C55E;
+        }
+
+        .verdict-malware {
+            background: linear-gradient(135deg, #FEE2E2 0%, #FECACA 100%);
+            border: 2px solid #EF4444;
+        }
+
+        .verdict-suspicious {
+            background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
+            border: 2px solid #F59E0B;
+        }
+
+        .verdict-loading {
+            background: linear-gradient(135deg, #F1F5F9 0%, #E2E8F0 100%);
+            border: 2px solid #94A3B8;
+        }
+
+        .verdict-icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+        }
+
+        .verdict-text {
+            font-size: 28px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .verdict-benign .verdict-text { color: #16A34A; }
+        .verdict-malware .verdict-text { color: #DC2626; }
+        .verdict-suspicious .verdict-text { color: #D97706; }
+
+        .verdict-detail {
+            font-size: 14px;
+            color: #64748B;
+        }
+
+        .model-results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .model-card {
+            background: #F8FAFC;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #E2E8F0;
+            transition: all 0.3s;
+        }
+
+        .model-card:hover {
+            border-color: #5B68FF;
+            box-shadow: 0 4px 12px rgba(91, 104, 255, 0.15);
+        }
+
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .model-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1E293B;
+        }
+
+        .model-verdict-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-benign { background: #DCFCE7; color: #16A34A; }
+        .badge-malware { background: #FEE2E2; color: #DC2626; }
+
+        .model-confidence {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .confidence-bar-bg {
+            flex: 1;
+            height: 8px;
+            background: #E2E8F0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .confidence-bar {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+
+        .confidence-bar-green { background: linear-gradient(90deg, #22C55E, #16A34A); }
+        .confidence-bar-red { background: linear-gradient(90deg, #F87171, #EF4444); }
+
+        .confidence-text {
+            font-size: 14px;
+            font-weight: 600;
+            color: #64748B;
+            min-width: 50px;
+            text-align: right;
+        }
+
+        .model-family {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #E2E8F0;
+        }
+
+        .family-label {
+            font-size: 12px;
+            color: #94A3B8;
+            margin-bottom: 4px;
+        }
+
+        .family-value {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1E293B;
+        }
+
+        /* Family Probability Chart */
+        .family-chart-section {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid #E2E8F0;
+        }
+
+        .family-chart-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1E293B;
+            margin-bottom: 16px;
+        }
+
+        .family-bar-container {
+            margin-bottom: 8px;
+        }
+
+        .family-bar-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+
+        .family-bar-name {
+            color: #64748B;
+            font-weight: 500;
+        }
+
+        .family-bar-percent {
+            color: #94A3B8;
+        }
+
+        .family-bar-bg {
+            height: 6px;
+            background: #E2E8F0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .family-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+        }
+
+        .family-bar-fill.top-1 { background: linear-gradient(90deg, #EF4444, #DC2626); }
+        .family-bar-fill.top-2 { background: linear-gradient(90deg, #F97316, #EA580C); }
+        .family-bar-fill.top-3 { background: linear-gradient(90deg, #F59E0B, #D97706); }
+        .family-bar-fill.benign { background: linear-gradient(90deg, #22C55E, #16A34A); }
+        .family-bar-fill.default { background: linear-gradient(90deg, #94A3B8, #64748B); }
+
+        .security-loading {
+            text-align: center;
+            padding: 40px;
+            color: #94A3B8;
+        }
+
+        .security-loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #E2E8F0;
+            border-top-color: #5B68FF;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
         @media (max-width: 768px) {
             .main-container {
                 margin-left: 0;
@@ -369,6 +586,10 @@
             }
 
             .action-buttons {
+                grid-template-columns: 1fr;
+            }
+
+            .model-results-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -482,6 +703,93 @@
                     </button>
                 </div>
             </div>
+
+            <!-- Security Detection Section -->
+            <div class="security-section" id="security-section">
+                <h2 class="section-title">
+                    <span>🛡️</span>
+                    <span>安全检测</span>
+                </h2>
+
+                <!-- Loading State -->
+                <div class="security-loading" id="security-loading">
+                    <div class="security-loading-spinner"></div>
+                    <div>正在加载安全检测结果...</div>
+                </div>
+
+                <!-- Detection Results -->
+                <div id="security-content" style="display: none;">
+                    <!-- Main Verdict -->
+                    <div class="verdict-card" id="verdict-card">
+                        <div class="verdict-icon" id="verdict-icon">🔍</div>
+                        <div class="verdict-text" id="verdict-text">检测中...</div>
+                        <div class="verdict-detail" id="verdict-detail"></div>
+                    </div>
+
+                    <!-- Model Results Grid -->
+                    <div class="model-results-grid" id="model-results-grid">
+                        <!-- Drebin Model -->
+                        <div class="model-card" id="model-drebin">
+                            <div class="model-header">
+                                <span class="model-name">Drebin 模型</span>
+                                <span class="model-verdict-badge" id="drebin-badge">-</span>
+                            </div>
+                            <div class="model-confidence">
+                                <div class="confidence-bar-bg">
+                                    <div class="confidence-bar" id="drebin-bar" style="width: 0%"></div>
+                                </div>
+                                <span class="confidence-text" id="drebin-confidence">0%</span>
+                            </div>
+                        </div>
+
+                        <!-- MH-100K Model -->
+                        <div class="model-card" id="model-mh100k">
+                            <div class="model-header">
+                                <span class="model-name">MH-100K 模型</span>
+                                <span class="model-verdict-badge" id="mh100k-badge">-</span>
+                            </div>
+                            <div class="model-confidence">
+                                <div class="confidence-bar-bg">
+                                    <div class="confidence-bar" id="mh100k-bar" style="width: 0%"></div>
+                                </div>
+                                <span class="confidence-text" id="mh100k-confidence">0%</span>
+                            </div>
+                        </div>
+
+                        <!-- CICMalDroid Model -->
+                        <div class="model-card" id="model-cicmaldroid">
+                            <div class="model-header">
+                                <span class="model-name">CICMalDroid 模型</span>
+                                <span class="model-verdict-badge" id="cicmaldroid-badge">-</span>
+                            </div>
+                            <div class="model-confidence">
+                                <div class="confidence-bar-bg">
+                                    <div class="confidence-bar" id="cicmaldroid-bar" style="width: 0%"></div>
+                                </div>
+                                <span class="confidence-text" id="cicmaldroid-confidence">0%</span>
+                            </div>
+                            <div class="model-family" id="cicmaldroid-family-section">
+                                <div class="family-label">检测到的恶意软件家族</div>
+                                <div class="family-value" id="cicmaldroid-family">-</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Family Probability Chart (for CICMalDroid) -->
+                    <div class="family-chart-section" id="family-chart-section" style="display: none;">
+                        <div class="family-chart-title">🔬 15分类恶意软件家族概率分布</div>
+                        <div id="family-chart"></div>
+                    </div>
+                </div>
+
+                <!-- Error State -->
+                <div id="security-error" style="display: none;">
+                    <div class="error-box">
+                        <div class="error-title">⚠️ 安全检测失败</div>
+                        <div class="error-message" id="security-error-message"></div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -589,6 +897,217 @@
         }
 
         loadTaskDetail();
+        loadMalwareDetection();
+
+        // Malware Detection API
+        async function loadMalwareDetection() {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/malware-detection`);
+                if (!response.ok) {
+                    throw new Error('安全检测服务不可用');
+                }
+                const data = await response.json();
+
+                // Hide loading, show content
+                document.getElementById('security-loading').style.display = 'none';
+                document.getElementById('security-content').style.display = 'block';
+
+                // Render main verdict
+                renderMainVerdict(data);
+
+                // Render individual model results
+                renderModelResults(data);
+
+                // Render family probability chart if CICMalDroid data exists
+                const modelResults = getModelResults(data);
+                const cicResult = modelResults.cicmaldroid;
+                const familyProbabilities = (cicResult && (cicResult.family_probabilities || cicResult.top_k_predictions))
+                    || data.family_probabilities;
+                if (familyProbabilities) {
+                    renderFamilyChart(familyProbabilities);
+                }
+
+            } catch (error) {
+                document.getElementById('security-loading').style.display = 'none';
+                document.getElementById('security-error').style.display = 'block';
+                document.getElementById('security-error-message').textContent = error.message;
+            }
+        }
+
+        function getModelResults(data) {
+            return {
+                drebin: data.drebin_result || data.drebin,
+                mh100k: data.mh100k_result || data.mh100k,
+                cicmaldroid: data.cicmaldroid_result || data.cicmaldroid
+            };
+        }
+
+        function renderMainVerdict(data) {
+            const verdictCard = document.getElementById('verdict-card');
+            const verdictIcon = document.getElementById('verdict-icon');
+            const verdictText = document.getElementById('verdict-text');
+            const verdictDetail = document.getElementById('verdict-detail');
+
+            // Count malware votes
+            let malwareVotes = 0;
+            let totalModels = 0;
+            let highestConfidence = 0;
+            let detectedFamily = data.predicted_family || 'Unknown';
+            const modelResults = getModelResults(data);
+
+            // Check Drebin
+            if (modelResults.drebin) {
+                totalModels++;
+                if (modelResults.drebin.is_malware) malwareVotes++;
+                if (modelResults.drebin.confidence > highestConfidence) {
+                    highestConfidence = modelResults.drebin.confidence;
+                }
+            }
+
+            // Check MH-100K
+            if (modelResults.mh100k) {
+                totalModels++;
+                if (modelResults.mh100k.is_malware) malwareVotes++;
+                if (modelResults.mh100k.confidence > highestConfidence) {
+                    highestConfidence = modelResults.mh100k.confidence;
+                }
+            }
+
+            // Check CICMalDroid
+            if (modelResults.cicmaldroid) {
+                totalModels++;
+                if (modelResults.cicmaldroid.is_malware) {
+                    malwareVotes++;
+                    detectedFamily = modelResults.cicmaldroid.predicted_family || detectedFamily;
+                }
+                if (modelResults.cicmaldroid.confidence > highestConfidence) {
+                    highestConfidence = modelResults.cicmaldroid.confidence;
+                }
+            }
+
+            // Determine verdict
+            if (malwareVotes === 0) {
+                verdictCard.className = 'verdict-card verdict-benign';
+                verdictIcon.textContent = '✅';
+                verdictText.textContent = '安全应用';
+                verdictDetail.textContent = `${totalModels} 个模型均判定为良性应用`;
+            } else if (malwareVotes >= 2) {
+                verdictCard.className = 'verdict-card verdict-malware';
+                verdictIcon.textContent = '🚨';
+                verdictText.textContent = '恶意软件';
+                verdictDetail.textContent = `${malwareVotes}/${totalModels} 个模型检测到恶意行为，家族: ${detectedFamily}`;
+            } else {
+                verdictCard.className = 'verdict-card verdict-suspicious';
+                verdictIcon.textContent = '⚠️';
+                verdictText.textContent = '可疑应用';
+                verdictDetail.textContent = `${malwareVotes}/${totalModels} 个模型检测到可疑行为，建议进一步分析`;
+            }
+        }
+
+        function renderModelResults(data) {
+            const modelResults = getModelResults(data);
+            // Render Drebin
+            if (modelResults.drebin) {
+                renderModelCard('drebin', modelResults.drebin);
+            }
+
+            // Render MH-100K
+            if (modelResults.mh100k) {
+                renderModelCard('mh100k', modelResults.mh100k);
+            }
+
+            // Render CICMalDroid
+            if (modelResults.cicmaldroid) {
+                renderModelCard('cicmaldroid', modelResults.cicmaldroid);
+
+                // Show family for CICMalDroid
+                const familySection = document.getElementById('cicmaldroid-family-section');
+                const familyValue = document.getElementById('cicmaldroid-family');
+                if (modelResults.cicmaldroid.predicted_family) {
+                    familySection.style.display = 'block';
+                    familyValue.textContent = modelResults.cicmaldroid.predicted_family;
+                    familyValue.style.color = modelResults.cicmaldroid.is_malware ? '#DC2626' : '#16A34A';
+                }
+            }
+        }
+
+        function renderModelCard(modelName, modelData) {
+            const badge = document.getElementById(`${modelName}-badge`);
+            const bar = document.getElementById(`${modelName}-bar`);
+            const confidenceText = document.getElementById(`${modelName}-confidence`);
+
+            const confidenceValue = modelData.confidence || 0;
+            const confidence = (confidenceValue * 100).toFixed(1);
+
+            if (modelData.is_malware) {
+                badge.textContent = '恶意';
+                badge.className = 'model-verdict-badge badge-malware';
+                bar.className = 'confidence-bar confidence-bar-red';
+            } else {
+                badge.textContent = '良性';
+                badge.className = 'model-verdict-badge badge-benign';
+                bar.className = 'confidence-bar confidence-bar-green';
+            }
+
+            bar.style.width = `${confidence}%`;
+            confidenceText.textContent = `${confidence}%`;
+        }
+
+        function renderFamilyChart(probabilities) {
+            const chartSection = document.getElementById('family-chart-section');
+            const chartContainer = document.getElementById('family-chart');
+
+            let sorted = [];
+            if (Array.isArray(probabilities)) {
+                sorted = probabilities.map((entry) => {
+                    if (Array.isArray(entry)) {
+                        return [entry[0], entry[1]];
+                    }
+                    return [entry.family, entry.probability];
+                }).filter((entry) => entry[0] !== undefined && entry[1] !== undefined);
+                sorted.sort((a, b) => b[1] - a[1]);
+                sorted = sorted.slice(0, 10);
+            } else if (probabilities && typeof probabilities === 'object') {
+                // Sort probabilities by value (descending)
+                sorted = Object.entries(probabilities)
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 10); // Show top 10
+            }
+
+            if (sorted.length === 0) return;
+
+            chartSection.style.display = 'block';
+            chartContainer.innerHTML = '';
+
+            sorted.forEach((entry, index) => {
+                const [family, probability] = entry;
+                const percent = (probability * 100).toFixed(2);
+
+                let barClass = 'default';
+                if (family === 'Benign') {
+                    barClass = 'benign';
+                } else if (index === 0 && family !== 'Benign') {
+                    barClass = 'top-1';
+                } else if (index === 1) {
+                    barClass = 'top-2';
+                } else if (index === 2) {
+                    barClass = 'top-3';
+                }
+
+                const barHtml = `
+                    <div class="family-bar-container">
+                        <div class="family-bar-header">
+                            <span class="family-bar-name">${family}</span>
+                            <span class="family-bar-percent">${percent}%</span>
+                        </div>
+                        <div class="family-bar-bg">
+                            <div class="family-bar-fill ${barClass}" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+                `;
+                chartContainer.innerHTML += barHtml;
+            });
+        }
     </script>
 </body>
 </html>

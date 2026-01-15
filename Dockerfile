@@ -6,8 +6,11 @@
 # ============================================
 FROM golang:1.23-alpine AS builder
 
+# 使用阿里云镜像加速 Alpine 包下载
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+
 # 安装构建依赖
-RUN apk add --no-cache git make gcc musl-dev
+RUN apk add --no-cache --progress git make gcc musl-dev
 
 # 设置 Go 代理 (使用国内镜像加速)
 ENV GOPROXY=https://goproxy.cn,direct
@@ -36,6 +39,9 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
 # ============================================
 FROM debian:bookworm-slim
 
+# 使用阿里云镜像加速 Debian 包下载
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
 # 安装运行时依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -50,11 +56,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
-# 安装 Androguard 4.x (深度 DEX 分析，提取代码中硬编码的 URL)
-# 版本 4.1.3 性能大幅提升：63MB APK 从 16+ 分钟降至 2-3 分钟 (5-8x 性能提升)
+# 安装 Python 依赖
+# 1. Androguard 4.x (深度 DEX 分析，提取代码中硬编码的 URL)
+# 2. PyTorch (CPU版本，用于恶意检测模型推理)
+# 3. Flask (恶意检测 API 服务)
 # 使用国内 PyPI 镜像加速安装
 RUN pip3 install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    "androguard>=4.1.0,<5.0.0" --break-system-packages
+    "androguard>=4.1.0,<5.0.0" \
+    "torch>=2.0.0" \
+    "numpy>=1.24.0" \
+    "pandas>=2.0.0" \
+    "scikit-learn>=1.3.0" \
+    "imbalanced-learn>=0.11.0" \
+    "tqdm>=4.65.0" \
+    "flask>=2.3.0" \
+    "flask-cors>=4.0.0" \
+    "gunicorn>=21.0.0" \
+    --break-system-packages
 
 # 安装 Android SDK Platform Tools (adb) 和 Build Tools (aapt2)
 ENV ANDROID_SDK_ROOT=/opt/android-sdk
@@ -94,26 +112,36 @@ COPY --from=builder /build/configs ./configs
 # 复制 web 前端资源
 COPY --from=builder /build/web ./web
 
-# 复制 scripts 目录 (包含 LIEF 提取脚本)
+# 复制 scripts 目录 (包含静态分析脚本和恶意检测服务)
 COPY --from=builder /build/scripts ./scripts
 
-# 创建必要目录
+# 恶意检测模型通过卷挂载，不复制到镜像中（减小镜像体积）
+# 模型目录将在 docker-compose 中挂载: ./models:/app/models
+
+# 复制启动脚本
+COPY --from=builder /build/entrypoint.sh ./entrypoint.sh
+
+# 创建必要目录并设置权限
 RUN mkdir -p \
     /app/results \
     /app/logs \
     /app/inbound_apks \
     /app/backups && \
+    chmod +x /app/entrypoint.sh && \
     chown -R appuser:appuser /app
 
 # 切换到非 root 用户
 USER appuser
 
 # 暴露端口
-EXPOSE 8080 9090
+# 8080: Go API 服务
+# 5000: Python 恶意检测服务
+# 9090: Prometheus metrics
+EXPOSE 8080 5000 9090
 
 # 健康检查
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD wget --quiet --tries=1 --spider http://localhost:8080/api/health || exit 1
 
-# 启动应用
-CMD ["./apk-analysis-server"]
+# 启动应用 (使用 entrypoint 同时启动 Go 和 Python 服务)
+ENTRYPOINT ["./entrypoint.sh"]

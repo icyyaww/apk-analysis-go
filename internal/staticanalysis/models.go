@@ -1,6 +1,10 @@
 package staticanalysis
 
-import "time"
+import (
+	"time"
+
+	"github.com/apk-analysis/apk-analysis-go/internal/packer"
+)
 
 // BasicInfo Go 快速分析提取的基础信息
 type BasicInfo struct {
@@ -78,11 +82,16 @@ type AnalysisResult struct {
 	// 深度分析结果（Python，可选）
 	DeepAnalysis *DeepAnalysisResult `json:"deep_analysis,omitempty"`
 
+	// 壳检测结果
+	PackerInfo            *packer.PackerInfo `json:"packer_info,omitempty"`
+	NeedsDynamicUnpacking bool               `json:"needs_dynamic_unpacking,omitempty"`
+
 	// 元数据
 	AnalysisMode            string    `json:"analysis_mode"` // "fast" / "deep" / "fast_fallback"
 	AnalysisDuration        int64     `json:"analysis_duration_ms"`
 	FastAnalysisDuration    int64     `json:"fast_analysis_duration_ms,omitempty"`
 	DeepAnalysisDuration    int64     `json:"deep_analysis_duration_ms,omitempty"`
+	PackerDetectionDuration int64     `json:"packer_detection_duration_ms,omitempty"`
 	AnalyzedAt              time.Time `json:"analyzed_at"`
 	NeedsDeepAnalysisReason string    `json:"needs_deep_analysis_reason,omitempty"`
 }

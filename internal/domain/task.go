@@ -139,6 +139,7 @@ type Task struct {
 	DomainAnalysis *TaskDomainAnalysis `gorm:"foreignKey:TaskID;references:ID" json:"domain_analysis,omitempty"`
 	AppDomains     []TaskAppDomain     `gorm:"foreignKey:TaskID;references:ID" json:"app_domains,omitempty"`
 	AILogs         *TaskAILog          `gorm:"foreignKey:TaskID;references:ID" json:"ai_logs,omitempty"`
+	MalwareResult  *TaskMalwareResult  `gorm:"foreignKey:TaskID;references:ID" json:"malware_result,omitempty"`
 }
 
 func (Task) TableName() string {
@@ -230,4 +231,20 @@ type ThirdPartySDKRule struct {
 
 func (ThirdPartySDKRule) TableName() string {
 	return "third_party_sdk_rules"
+}
+
+// TaskMalwareResult 恶意检测结果表 (用于任务列表关联查询)
+type TaskMalwareResult struct {
+	ID              uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	TaskID          string     `gorm:"type:varchar(36);uniqueIndex:uk_task_id;not null" json:"task_id"`
+	Status          string     `gorm:"type:varchar(30);not null;default:'pending'" json:"status"` // pending, running, completed, failed
+	IsMalware       bool       `gorm:"default:false" json:"is_malware"`
+	Confidence      float64    `gorm:"type:decimal(5,4)" json:"confidence"`
+	PredictedFamily string     `gorm:"type:varchar(50)" json:"predicted_family,omitempty"`
+	DetectedAt      *time.Time `json:"detected_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
+func (TaskMalwareResult) TableName() string {
+	return "task_malware_results"
 }

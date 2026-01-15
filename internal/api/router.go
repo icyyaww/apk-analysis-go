@@ -6,6 +6,7 @@ import (
 	"github.com/apk-analysis/apk-analysis-go/internal/api/handlers"
 	"github.com/apk-analysis/apk-analysis-go/internal/config"
 	"github.com/apk-analysis/apk-analysis-go/internal/device"
+	"github.com/apk-analysis/apk-analysis-go/internal/malware"
 	"github.com/apk-analysis/apk-analysis-go/internal/middleware"
 	"github.com/apk-analysis/apk-analysis-go/internal/repository"
 	"github.com/apk-analysis/apk-analysis-go/internal/service"
@@ -14,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMonitor *middleware.MemoryMonitor, promMetrics *middleware.PrometheusMetrics, deviceMgr *device.DeviceManager, aiInteractionHandler *handlers.AIInteractionHandler) *gin.Engine {
+func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMonitor *middleware.MemoryMonitor, promMetrics *middleware.PrometheusMetrics, deviceMgr *device.DeviceManager, aiInteractionHandler *handlers.AIInteractionHandler, malwareDetector *malware.Detector) *gin.Engine {
 	// 设置 Gin 模式
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -39,6 +40,9 @@ func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMoni
 	// 初始化依赖
 	taskRepo := repository.NewTaskRepository(db, logger)
 	sdkRepo := repository.NewSDKRepository(db)
+	staticRepo := repository.NewStaticReportRepository(db)
+	unpackingRepo := repository.NewUnpackingRepository(db, logger)
+	malwareRepo := repository.NewMalwareRepository(db, logger)
 	taskService := service.NewTaskService(taskRepo, logger)
 
 	// 初始化处理器
@@ -47,6 +51,8 @@ func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMoni
 	sdkHandler := handlers.NewSDKHandler(sdkRepo, logger)
 	certHandler := handlers.NewCertHandler(cfg.ADB.Target, logger)
 	authHandler := handlers.NewAuthHandler(logger)
+	packerHandler := handlers.NewPackerHandler(taskService, unpackingRepo, staticRepo, logger)
+	malwareHandler := handlers.NewMalwareHandler(taskService, malwareRepo, malwareDetector, logger)
 	// aiInteractionHandler 已在main.go中创建并传入，直接使用
 
 	// 登录页面（无需认证）
@@ -80,6 +86,13 @@ func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMoni
 	// AI交互监控页面
 	r.GET("/ai-interaction", aiInteractionHandler.GetAIInteractionPage)
 	r.GET("/ws/ai-interaction/:task_id", aiInteractionHandler.HandleWebSocket)
+
+	// 安全分析页面
+	r.GET("/tasks/:id/security", func(c *gin.Context) {
+		c.HTML(200, "security_analysis.html", gin.H{
+			"title": "安全分析",
+		})
+	})
 
 	// 性能监控端点 (仅在非生产环境)
 	if cfg.Server.Mode != "release" {
@@ -161,6 +174,20 @@ func SetupRouter(cfg *config.Config, logger *logrus.Logger, db *gorm.DB, memMoni
 		v1.POST("/sdk_rules/:id/reject", sdkHandler.RejectSDKRule)
 		v1.PUT("/sdk_rules/:id", sdkHandler.UpdateSDKRule)
 		v1.DELETE("/sdk_rules/:id", sdkHandler.DeleteSDKRule)
+
+		// 壳检测与脱壳 API
+		v1.GET("/tasks/:id/packer-detection", packerHandler.GetPackerDetection)
+		v1.GET("/tasks/:id/unpacking-result", packerHandler.GetUnpackingResult)
+		v1.GET("/packer/statistics", packerHandler.GetPackerStatistics)
+		v1.GET("/unpacking/statistics", packerHandler.GetUnpackingStatistics)
+		v1.GET("/security/overview", packerHandler.GetPackerAndUnpackingOverview)
+
+		// 恶意检测 API
+		v1.GET("/tasks/:id/malware-detection", malwareHandler.GetMalwareDetection)
+		v1.POST("/tasks/:id/malware-detection/run", malwareHandler.RunMalwareDetection)
+		v1.GET("/malware/statistics", malwareHandler.GetMalwareStatistics)
+		v1.GET("/malware/recent", malwareHandler.GetRecentMalware)
+		v1.GET("/malware/status", malwareHandler.GetMalwareServiceStatus)
 	}
 
 	return r

@@ -19,6 +19,7 @@ import (
 	"github.com/apk-analysis/apk-analysis-go/internal/config"
 	"github.com/apk-analysis/apk-analysis-go/internal/device"
 	"github.com/apk-analysis/apk-analysis-go/internal/domainanalysis"
+	"github.com/apk-analysis/apk-analysis-go/internal/malware"
 	"github.com/apk-analysis/apk-analysis-go/internal/middleware"
 	"github.com/apk-analysis/apk-analysis-go/internal/queue"
 	"github.com/apk-analysis/apk-analysis-go/internal/repository"
@@ -184,6 +185,7 @@ func main() {
 	// 6. 初始化 Services
 	taskRepo := repository.NewTaskRepository(db, logger)
 	staticReportRepo := repository.NewStaticReportRepository(db)
+	malwareRepo := repository.NewMalwareRepository(db, logger)
 	taskService := service.NewTaskService(taskRepo, logger)
 
 	// 7. 静态分析使用 Hybrid 模式（Go + Androguard）
@@ -231,7 +233,7 @@ func main() {
 	resultsDir := "./results"
 	os.MkdirAll(resultsDir, 0755)
 
-	orchestrator := worker.NewOrchestrator(deviceMgr, taskRepo, staticReportRepo, cfg, logger, resultsDir, mitmProxyHost)
+	orchestrator := worker.NewOrchestrator(deviceMgr, taskRepo, staticReportRepo, malwareRepo, cfg, logger, resultsDir, mitmProxyHost)
 
 	// 8.2. 设置AI交互广播器（用于实时推送AI动作到前端）
 	aiBroadcaster := handlers.NewAIBroadcasterAdapter(aiInteractionHandler)
@@ -350,8 +352,27 @@ func main() {
 
 	// TODO: 13. 初始化 Redis
 
+	// 13.5 初始化恶意检测器
+	var malwareDetector *malware.Detector
+	if cfg.Malware.Enabled {
+		malwareDetectorCfg := &malware.DetectorConfig{
+			ServerURL:               cfg.Malware.ServerURL,
+			Timeout:                 time.Duration(cfg.Malware.Timeout) * time.Second,
+			DefaultModels:           cfg.Malware.Models,
+			ExtractGraphFeatures:    cfg.Malware.ExtractGraphFeatures,
+			ExtractTemporalFeatures: cfg.Malware.ExtractTemporalFeatures,
+			UseEnsemble:             cfg.Malware.UseEnsemble,
+			MaxRetries:              cfg.Malware.MaxRetries,
+			RetryDelay:              time.Duration(cfg.Malware.RetryDelay) * time.Second,
+		}
+		malwareDetector = malware.NewDetector(malwareDetectorCfg, logger)
+		logger.Infof("Malware detector initialized with server: %s, models: %v", cfg.Malware.ServerURL, cfg.Malware.Models)
+	} else {
+		logger.Info("Malware detection disabled")
+	}
+
 	// 14. 设置 HTTP Server
-	router := api.SetupRouter(cfg, logger, db, memMonitor, promMetrics, deviceMgr, aiInteractionHandler)
+	router := api.SetupRouter(cfg, logger, db, memMonitor, promMetrics, deviceMgr, aiInteractionHandler, malwareDetector)
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
 		Handler:      router,

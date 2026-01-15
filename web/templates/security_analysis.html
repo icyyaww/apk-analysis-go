@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+            background: #F5F7FA;
+            min-height: 100vh;
+        }
+
+        /* 侧边栏 */
+        .sidebar {
+            position: fixed;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 70px;
+            background: #1E293B;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px 0;
+            z-index: 1000;
+        }
+
+        .sidebar .logo {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #5B68FF 0%, #8B5CF6 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 40px;
+            cursor: pointer;
+        }
+
+        .sidebar .nav-icon {
+            width: 45px;
+            height: 45px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #94A3B8;
+            font-size: 20px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .sidebar .nav-icon:hover {
+            background: rgba(94, 104, 255, 0.1);
+            color: #5B68FF;
+        }
+
+        .sidebar .nav-icon.active {
+            background: rgba(94, 104, 255, 0.15);
+            color: #5B68FF;
+        }
+
+        /* 主内容区 */
+        .main-content {
+            margin-left: 70px;
+            padding: 30px;
+            min-height: 100vh;
+        }
+
+        /* 顶部导航 */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            color: #1E293B;
+            font-weight: 600;
+        }
+
+        .back-btn {
+            background: #5B68FF;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 10px;
+            border: none;
+            font-weight: 500;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s;
+            box-shadow: 0 2px 8px rgba(91, 104, 255, 0.3);
+            text-decoration: none;
+        }
+
+        .back-btn:hover {
+            background: #4A56E8;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(91, 104, 255, 0.4);
+        }
+
+        /* 任务信息卡片 */
+        .task-info-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            display: flex;
+            gap: 40px;
+            flex-wrap: wrap;
+        }
+
+        .task-info-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .task-info-label {
+            font-size: 12px;
+            color: #64748B;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .task-info-value {
+            font-size: 15px;
+            color: #1E293B;
+            font-weight: 500;
+        }
+
+        /* 卡片样式 */
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1E293B;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card-title .icon {
+            font-size: 24px;
+        }
+
+        /* 状态徽章 */
+        .status-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .status-safe {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+
+        .status-danger {
+            background: #FEE2E2;
+            color: #991B1B;
+        }
+
+        .status-warning {
+            background: #FEF3C7;
+            color: #92400E;
+        }
+
+        .status-pending {
+            background: #F1F5F9;
+            color: #64748B;
+        }
+
+        .status-running {
+            background: #DBEAFE;
+            color: #1E40AF;
+        }
+
+        /* 检测结果网格 */
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .result-item {
+            background: #F8FAFC;
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .result-item.highlight {
+            border: 2px solid #5B68FF;
+            background: rgba(91, 104, 255, 0.05);
+        }
+
+        .result-label {
+            font-size: 13px;
+            color: #64748B;
+            margin-bottom: 8px;
+        }
+
+        .result-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #1E293B;
+        }
+
+        .result-value.safe {
+            color: #10B981;
+        }
+
+        .result-value.danger {
+            color: #EF4444;
+        }
+
+        .result-value.warning {
+            color: #F59E0B;
+        }
+
+        /* 表格样式 */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .data-table thead {
+            background: #F8FAFC;
+        }
+
+        .data-table th {
+            padding: 12px 16px;
+            text-align: left;
+            font-weight: 600;
+            color: #64748B;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .data-table td {
+            padding: 14px 16px;
+            border-top: 1px solid #F1F5F9;
+            color: #475569;
+            font-size: 14px;
+        }
+
+        .data-table tr:hover {
+            background: #F8FAFC;
+        }
+
+        /* 模型结果卡片 */
+        .model-card {
+            background: #F8FAFC;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+
+        .model-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .model-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1E293B;
+        }
+
+        .model-desc {
+            font-size: 12px;
+            color: #64748B;
+            margin-top: 2px;
+        }
+
+        .confidence-bar {
+            height: 8px;
+            background: #E2E8F0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 12px;
+        }
+
+        .confidence-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+
+        .confidence-fill.safe {
+            background: linear-gradient(90deg, #10B981, #34D399);
+        }
+
+        .confidence-fill.danger {
+            background: linear-gradient(90deg, #EF4444, #F87171);
+        }
+
+        /* 家族概率列表 */
+        .family-list {
+            margin-top: 16px;
+        }
+
+        .family-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 0;
+            border-bottom: 1px solid #F1F5F9;
+        }
+
+        .family-item:last-child {
+            border-bottom: none;
+        }
+
+        .family-rank {
+            width: 24px;
+            height: 24px;
+            background: #5B68FF;
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .family-rank.secondary {
+            background: #94A3B8;
+        }
+
+        .family-name {
+            flex: 1;
+            font-weight: 500;
+            color: #1E293B;
+        }
+
+        .family-prob {
+            font-weight: 600;
+            color: #5B68FF;
+        }
+
+        /* DEX 文件列表 */
+        .dex-list {
+            display: grid;
+            gap: 12px;
+        }
+
+        .dex-item {
+            background: #F8FAFC;
+            border-radius: 8px;
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .dex-icon {
+            width: 40px;
+            height: 40px;
+            background: #5B68FF;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 18px;
+        }
+
+        .dex-info {
+            flex: 1;
+        }
+
+        .dex-name {
+            font-weight: 500;
+            color: #1E293B;
+            font-size: 14px;
+        }
+
+        .dex-size {
+            font-size: 12px;
+            color: #64748B;
+        }
+
+        /* 空状态 */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #94A3B8;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .empty-state-text {
+            font-size: 16px;
+            color: #64748B;
+        }
+
+        /* 加载状态 */
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748B;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #F1F5F9;
+            border-top-color: #5B68FF;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* 按钮组 */
+        .btn-group {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: #5B68FF;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #4A56E8;
+        }
+
+        .btn-secondary {
+            background: #F1F5F9;
+            color: #64748B;
+        }
+
+        .btn-secondary:hover {
+            background: #E2E8F0;
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* 特征统计 */
+        .feature-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+
+        .feature-stat {
+            background: #F8FAFC;
+            border-radius: 10px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .feature-stat-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #5B68FF;
+        }
+
+        .feature-stat-label {
+            font-size: 12px;
+            color: #64748B;
+            margin-top: 4px;
+        }
+
+        /* 指标列表 */
+        .indicator-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+
+        .indicator-tag {
+            padding: 6px 12px;
+            background: #FEF3C7;
+            color: #92400E;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .indicator-tag.safe {
+            background: #D1FAE5;
+            color: #065F46;
+        }
+    </style>
+</head>
+<body>
+    <!-- 侧边栏 -->
+    <div class="sidebar">
+        <div class="logo" onclick="location.href='/'">A</div>
+        <div class="nav-icon" onclick="location.href='/'">📊</div>
+        <div class="nav-icon active">🔐</div>
+    </div>
+
+    <!-- 主内容区 -->
+    <div class="main-content">
+        <!-- 顶部导航 -->
+        <div class="header">
+            <h1>🔐 安全分析</h1>
+            <a href="/" class="back-btn">
+                <span>←</span>
+                <span>返回任务列表</span>
+            </a>
+        </div>
+
+        <!-- 任务信息 -->
+        <div class="task-info-card" id="task-info">
+            <div class="loading">
+                <div class="loading-spinner"></div>
+                <div>加载中...</div>
+            </div>
+        </div>
+
+        <!-- 壳检测 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">
+                    <span class="icon">📦</span>
+                    <span>壳检测</span>
+                </div>
+                <span class="status-badge status-pending" id="packer-status">检测中...</span>
+            </div>
+            <div id="packer-content">
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <div>加载中...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 动态脱壳 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">
+                    <span class="icon">🔓</span>
+                    <span>动态脱壳</span>
+                </div>
+                <span class="status-badge status-pending" id="unpacking-status">待检测</span>
+            </div>
+            <div id="unpacking-content">
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <div>加载中...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 恶意检测 -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">
+                    <span class="icon">🛡️</span>
+                    <span>恶意检测</span>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-secondary" id="rerun-btn" onclick="rerunMalwareDetection()">
+                        🔄 重新检测
+                    </button>
+                </div>
+            </div>
+            <div id="malware-content">
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <div>加载中...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 获取任务 ID
+        const taskId = window.location.pathname.split('/')[2];
+
+        // 加载任务基本信息
+        async function loadTaskInfo() {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}`);
+                const task = await response.json();
+
+                document.getElementById('task-info').innerHTML = `
+                    <div class="task-info-item">
+                        <span class="task-info-label">应用名称</span>
+                        <span class="task-info-value">${task.app_name || task.apk_name || 'N/A'}</span>
+                    </div>
+                    <div class="task-info-item">
+                        <span class="task-info-label">包名</span>
+                        <span class="task-info-value">${task.package_name || 'N/A'}</span>
+                    </div>
+                    <div class="task-info-item">
+                        <span class="task-info-label">任务状态</span>
+                        <span class="task-info-value">${formatStatus(task.status)}</span>
+                    </div>
+                    <div class="task-info-item">
+                        <span class="task-info-label">创建时间</span>
+                        <span class="task-info-value">${formatDate(task.created_at)}</span>
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Failed to load task info:', error);
+                document.getElementById('task-info').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-text">加载任务信息失败</div>
+                    </div>
+                `;
+            }
+        }
+
+        // 加载壳检测结果
+        async function loadPackerDetection() {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/packer-detection`);
+                const data = await response.json();
+
+                const statusEl = document.getElementById('packer-status');
+                const contentEl = document.getElementById('packer-content');
+
+                if (!data || !data.packer_info) {
+                    statusEl.className = 'status-badge status-safe';
+                    statusEl.textContent = '未加壳';
+                    contentEl.innerHTML = `
+                        <div class="result-grid">
+                            <div class="result-item highlight">
+                                <div class="result-label">检测结果</div>
+                                <div class="result-value safe">未加壳</div>
+                            </div>
+                            <div class="result-item">
+                                <div class="result-label">壳类型</div>
+                                <div class="result-value">-</div>
+                            </div>
+                            <div class="result-item">
+                                <div class="result-label">置信度</div>
+                                <div class="result-value">-</div>
+                            </div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const packer = data.packer_info;
+                const isPacked = packer.is_packed;
+
+                statusEl.className = isPacked ? 'status-badge status-warning' : 'status-badge status-safe';
+                statusEl.textContent = isPacked ? '已加壳' : '未加壳';
+
+                let indicatorsHtml = '';
+                if (packer.indicators && packer.indicators.length > 0) {
+                    indicatorsHtml = `
+                        <div style="margin-top: 20px;">
+                            <div class="result-label" style="margin-bottom: 12px;">检测指标</div>
+                            <div class="indicator-list">
+                                ${packer.indicators.map(ind => `<span class="indicator-tag">${ind}</span>`).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                contentEl.innerHTML = `
+                    <div class="result-grid">
+                        <div class="result-item highlight">
+                            <div class="result-label">检测结果</div>
+                            <div class="result-value ${isPacked ? 'warning' : 'safe'}">${isPacked ? '已加壳' : '未加壳'}</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">壳类型</div>
+                            <div class="result-value">${packer.packer_name || '-'}</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">置信度</div>
+                            <div class="result-value">${packer.confidence ? Math.round(packer.confidence * 100) + '%' : '-'}</div>
+                        </div>
+                    </div>
+                    ${indicatorsHtml}
+                `;
+            } catch (error) {
+                console.error('Failed to load packer detection:', error);
+                document.getElementById('packer-status').className = 'status-badge status-pending';
+                document.getElementById('packer-status').textContent = '加载失败';
+                document.getElementById('packer-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <div class="empty-state-text">加载壳检测结果失败</div>
+                    </div>
+                `;
+            }
+        }
+
+        // 加载脱壳结果
+        async function loadUnpackingResult() {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/unpacking-result`);
+                const data = await response.json();
+
+                const statusEl = document.getElementById('unpacking-status');
+                const contentEl = document.getElementById('unpacking-content');
+
+                if (!data || data.status === 'not_packed') {
+                    statusEl.className = 'status-badge status-pending';
+                    statusEl.textContent = '无需脱壳';
+                    contentEl.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">✅</div>
+                            <div class="empty-state-text">该应用未检测到加壳，无需进行脱壳操作</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (data.status === 'pending' || data.status === 'running') {
+                    statusEl.className = 'status-badge status-running';
+                    statusEl.textContent = data.status === 'running' ? '脱壳中...' : '等待脱壳';
+                    contentEl.innerHTML = `
+                        <div class="loading">
+                            <div class="loading-spinner"></div>
+                            <div>正在进行动态脱壳...</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (data.status === 'failed') {
+                    statusEl.className = 'status-badge status-danger';
+                    statusEl.textContent = '脱壳失败';
+                    contentEl.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">❌</div>
+                            <div class="empty-state-text">脱壳失败: ${data.error_message || '未知错误'}</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // 成功状态
+                statusEl.className = 'status-badge status-safe';
+                statusEl.textContent = '脱壳成功';
+
+                const dexFiles = data.dex_files || [];
+                let dexListHtml = '';
+                if (dexFiles.length > 0) {
+                    dexListHtml = `
+                        <div style="margin-top: 20px;">
+                            <div class="result-label" style="margin-bottom: 12px;">提取的 DEX 文件</div>
+                            <div class="dex-list">
+                                ${dexFiles.map((dex, idx) => `
+                                    <div class="dex-item">
+                                        <div class="dex-icon">📄</div>
+                                        <div class="dex-info">
+                                            <div class="dex-name">${dex.name || 'classes' + (idx + 1) + '.dex'}</div>
+                                            <div class="dex-size">${formatBytes(dex.size || 0)}</div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                contentEl.innerHTML = `
+                    <div class="result-grid">
+                        <div class="result-item highlight">
+                            <div class="result-label">脱壳状态</div>
+                            <div class="result-value safe">成功</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">提取 DEX 数量</div>
+                            <div class="result-value">${dexFiles.length}</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">耗时</div>
+                            <div class="result-value">${data.duration ? (data.duration / 1000).toFixed(1) + 's' : '-'}</div>
+                        </div>
+                    </div>
+                    ${dexListHtml}
+                `;
+            } catch (error) {
+                console.error('Failed to load unpacking result:', error);
+                document.getElementById('unpacking-status').className = 'status-badge status-pending';
+                document.getElementById('unpacking-status').textContent = '加载失败';
+                document.getElementById('unpacking-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <div class="empty-state-text">加载脱壳结果失败</div>
+                    </div>
+                `;
+            }
+        }
+
+        // 加载恶意检测结果
+        async function loadMalwareDetection() {
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/malware-detection`);
+                const contentEl = document.getElementById('malware-content');
+
+                // 检查 HTTP 状态码 - 404 表示没有检测结果
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        contentEl.innerHTML = `
+                            <div class="empty-state">
+                                <div class="empty-state-icon">⏳</div>
+                                <div class="empty-state-text">恶意检测尚未执行<br><small>该任务还没有进行恶意检测，点击"重新检测"按钮开始</small></div>
+                            </div>
+                        `;
+                        return;
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                if (!data || data.error || data.status === 'pending') {
+                    contentEl.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">⏳</div>
+                            <div class="empty-state-text">恶意检测尚未开始<br><small>点击"重新检测"按钮开始检测</small></div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (data.status === 'running') {
+                    contentEl.innerHTML = `
+                        <div class="loading">
+                            <div class="loading-spinner"></div>
+                            <div>正在进行恶意检测...</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                if (data.status === 'failed') {
+                    contentEl.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">❌</div>
+                            <div class="empty-state-text">恶意检测失败: ${data.error_message || '未知错误'}</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // 处理 skipped 状态（检测被跳过）
+                if (data.status === 'skipped') {
+                    contentEl.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">⏭️</div>
+                            <div class="empty-state-text">恶意检测已跳过<br><small>${data.error_message || '检测服务不可用'}</small></div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // 验证是否有有效的检测结果（completed 状态但没有实际数据）
+                const confidence = data.confidence || 0;
+                const hasValidResult = data.status === 'completed' &&
+                                       (confidence > 0 || data.detected_at);
+
+                if (!hasValidResult) {
+                    contentEl.innerHTML = `
+                        <div class="empty-state">
+                            <div class="empty-state-icon">⏳</div>
+                            <div class="empty-state-text">恶意检测数据不完整<br><small>请点击"重新检测"按钮重新执行检测</small></div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                // 成功状态 - 显示检测结果
+                const isMalware = data.is_malware;
+
+                // 收集各模型结果（API 返回的是单独的字段）
+                const modelResults = [];
+                if (data.drebin_result) {
+                    modelResults.push({ ...data.drebin_result, model_name: 'drebin' });
+                }
+                if (data.mh100k_result) {
+                    modelResults.push({ ...data.mh100k_result, model_name: 'mh100k' });
+                }
+                if (data.cicmaldroid_result) {
+                    modelResults.push({ ...data.cicmaldroid_result, model_name: 'cicmaldroid' });
+                }
+
+                let modelsHtml = '';
+                if (modelResults.length > 0) {
+                    modelsHtml = modelResults.map(model => {
+                        const modelIsMalware = model.is_malware;
+                        const modelConf = model.confidence || 0;
+
+                        let familyHtml = '';
+                        if (model.family_probabilities && model.family_probabilities.length > 0) {
+                            const topFamilies = model.family_probabilities.slice(0, 5);
+                            familyHtml = `
+                                <div class="family-list">
+                                    ${topFamilies.map((fam, idx) => `
+                                        <div class="family-item">
+                                            <span class="family-rank ${idx > 0 ? 'secondary' : ''}">${idx + 1}</span>
+                                            <span class="family-name">${fam.family}</span>
+                                            <span class="family-prob">${(fam.probability * 100).toFixed(1)}%</span>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            `;
+                        }
+
+                        return `
+                            <div class="model-card">
+                                <div class="model-header">
+                                    <div>
+                                        <div class="model-name">${getModelDisplayName(model.model_name)}</div>
+                                        <div class="model-desc">${getModelDescription(model.model_name)}</div>
+                                    </div>
+                                    <span class="status-badge ${modelIsMalware ? 'status-danger' : 'status-safe'}">
+                                        ${modelIsMalware ? '恶意' : '安全'}
+                                    </span>
+                                </div>
+                                <div class="result-grid" style="grid-template-columns: repeat(3, 1fr);">
+                                    <div class="result-item">
+                                        <div class="result-label">预测结果</div>
+                                        <div class="result-value ${modelIsMalware ? 'danger' : 'safe'}">${model.predicted_label || (modelIsMalware ? '恶意' : '安全')}</div>
+                                    </div>
+                                    <div class="result-item">
+                                        <div class="result-label">置信度</div>
+                                        <div class="result-value">${(modelConf * 100).toFixed(1)}%</div>
+                                    </div>
+                                    <div class="result-item">
+                                        <div class="result-label">预测家族</div>
+                                        <div class="result-value">${model.predicted_family || '-'}</div>
+                                    </div>
+                                </div>
+                                <div class="confidence-bar">
+                                    <div class="confidence-fill ${modelIsMalware ? 'danger' : 'safe'}" style="width: ${modelConf * 100}%"></div>
+                                </div>
+                                ${familyHtml}
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    modelsHtml = `
+                        <div class="empty-state" style="padding: 20px;">
+                            <div class="empty-state-text">暂无模型检测结果</div>
+                        </div>
+                    `;
+                }
+
+                // 特征统计
+                let featureHtml = '';
+                if (data.feature_summary) {
+                    const fs = data.feature_summary || {};
+                    const staticFeatures = fs.static_features || {};
+                    const permissionCount = staticFeatures.dangerous_permissions ?? fs.permission_count ?? fs.permissions_detected;
+                    const apiCount = staticFeatures.sensitive_apis ?? fs.api_call_count ?? fs.sensitive_apis_detected;
+                    const intentCount = staticFeatures.suspicious_intents ?? fs.intent_count ?? fs.intents_detected;
+                    const totalFeatures = staticFeatures.total_features ?? fs.total_features;
+                    const hasFeatureStats = [permissionCount, apiCount, intentCount, totalFeatures].some(
+                        value => value !== undefined && value !== null
+                    );
+
+                    if (hasFeatureStats) {
+                        const permissionValue = permissionCount ?? 0;
+                        const apiValue = apiCount ?? 0;
+                        const intentValue = intentCount ?? 0;
+                        const totalValue = totalFeatures ?? (permissionValue + apiValue + intentValue);
+                        featureHtml = `
+                            <div style="margin-top: 24px;">
+                                <div class="card-title" style="margin-bottom: 16px;">
+                                    <span class="icon">📊</span>
+                                    <span>特征统计</span>
+                                </div>
+                                <div class="feature-stats">
+                                    <div class="feature-stat">
+                                        <div class="feature-stat-value">${permissionValue}</div>
+                                        <div class="feature-stat-label">权限数量</div>
+                                    </div>
+                                    <div class="feature-stat">
+                                        <div class="feature-stat-value">${apiValue}</div>
+                                        <div class="feature-stat-label">API 调用</div>
+                                    </div>
+                                    <div class="feature-stat">
+                                        <div class="feature-stat-value">${intentValue}</div>
+                                        <div class="feature-stat-label">Intent 数量</div>
+                                    </div>
+                                    <div class="feature-stat">
+                                        <div class="feature-stat-value">${totalValue}</div>
+                                        <div class="feature-stat-label">总特征数</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                }
+
+                contentEl.innerHTML = `
+                    <div class="result-grid" style="margin-bottom: 24px;">
+                        <div class="result-item highlight">
+                            <div class="result-label">综合判定</div>
+                            <div class="result-value ${isMalware ? 'danger' : 'safe'}">${isMalware ? '恶意软件' : '安全'}</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">综合置信度</div>
+                            <div class="result-value">${(confidence * 100).toFixed(1)}%</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">预测家族</div>
+                            <div class="result-value">${data.predicted_family || '-'}</div>
+                        </div>
+                        <div class="result-item">
+                            <div class="result-label">检测时间</div>
+                            <div class="result-value">${formatDate(data.detected_at)}</div>
+                        </div>
+                    </div>
+
+                    <div class="card-title" style="margin-bottom: 16px;">
+                        <span class="icon">🤖</span>
+                        <span>模型检测结果</span>
+                    </div>
+                    ${modelsHtml}
+                    ${featureHtml}
+                `;
+            } catch (error) {
+                console.error('Failed to load malware detection:', error);
+                document.getElementById('malware-content').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">❌</div>
+                        <div class="empty-state-text">加载恶意检测结果失败</div>
+                    </div>
+                `;
+            }
+        }
+
+        // 重新运行恶意检测
+        async function rerunMalwareDetection() {
+            const btn = document.getElementById('rerun-btn');
+            btn.disabled = true;
+            btn.innerHTML = '⏳ 检测中...';
+
+            try {
+                const response = await fetch(`/api/tasks/${taskId}/malware-detection/run`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    // 检测成功，刷新显示结果
+                    loadMalwareDetection();
+                    btn.disabled = false;
+                    btn.innerHTML = '🔄 重新检测';
+                } else {
+                    // 解析错误信息
+                    let errorMsg = data.error || '未知错误';
+                    if (errorMsg.includes('file not found') || errorMsg.includes('not found')) {
+                        errorMsg = 'APK 文件不存在，任务完成后文件已被清理';
+                    }
+                    throw new Error(errorMsg);
+                }
+            } catch (error) {
+                console.error('Failed to rerun malware detection:', error);
+                alert('恶意检测失败: ' + error.message);
+                btn.disabled = false;
+                btn.innerHTML = '🔄 重新检测';
+            }
+        }
+
+        // 辅助函数
+        function formatStatus(status) {
+            const statusMap = {
+                'completed': '已完成',
+                'running': '运行中',
+                'queued': '排队中',
+                'failed': '失败',
+                'installing': '安装中',
+                'collecting': '收集中'
+            };
+            return statusMap[status] || status;
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return 'N/A';
+            const date = new Date(dateStr);
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function getModelDescription(modelName) {
+            const descriptions = {
+                'drebin': '基于 Drebin 数据集的二分类模型',
+                'mh100k': '基于 MH-100K 大规模数据集的检测模型',
+                'cicmaldroid': '基于 CICMalDroid 的 15 类家族识别模型'
+            };
+            return descriptions[modelName?.toLowerCase()] || '机器学习检测模型';
+        }
+
+        function getModelDisplayName(modelName) {
+            const names = {
+                'drebin': 'Drebin',
+                'mh100k': 'MH-100K',
+                'cicmaldroid': 'CICMalDroid'
+            };
+            return names[modelName?.toLowerCase()] || modelName || 'Unknown Model';
+        }
+
+        // 页面加载时获取数据
+        loadTaskInfo();
+        loadPackerDetection();
+        loadUnpackingResult();
+        loadMalwareDetection();
+    </script>
+</body>
+</html>

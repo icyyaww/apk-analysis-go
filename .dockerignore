@@ -1,0 +1,60 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Models directory (will be mounted as volume)
+models/
+
+# Test files
+*_test.go
+test/
+tests/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Temporary files
+*.log
+*.tmp
+tmp/
+
+# Local development
+.env
+.env.local
+*.local.yaml
+
+# APK files (will be mounted as volume)
+inbound_apks/*.apk
+results/
+data/
+
+# Python virtual environment
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Backup files
+backups/
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db

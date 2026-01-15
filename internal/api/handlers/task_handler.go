@@ -610,11 +610,30 @@ func (h *TaskHandler) taskToResponse(task *domain.Task) map[string]interface{} {
 		response["static_status"] = task.StaticReport.Status
 		response["static_url_count"] = task.StaticReport.URLCount
 		response["static_domain_count"] = task.StaticReport.DomainCount
+
+		// 壳检测信息
+		if task.StaticReport.IsPacked {
+			response["is_packed"] = true
+			response["packer_name"] = task.StaticReport.PackerName
+			response["packer_type"] = task.StaticReport.PackerType
+			response["packer_confidence"] = task.StaticReport.PackerConfidence
+			response["needs_dynamic_unpacking"] = task.StaticReport.NeedsDynamicUnpacking
+		} else {
+			response["is_packed"] = false
+		}
 	}
 
 	if task.DomainAnalysis != nil {
 		response["primary_domain"] = task.DomainAnalysis.PrimaryDomainJSON
 		response["domain_beian_status"] = task.DomainAnalysis.DomainBeianJSON
+	}
+
+	// 恶意检测结果（用于任务列表展示结论）
+	if task.MalwareResult != nil {
+		response["malware_result"] = map[string]interface{}{
+			"status":     task.MalwareResult.Status,
+			"is_malware": task.MalwareResult.IsMalware,
+		}
 	}
 
 	// 添加 IP 归属地信息（从 task_app_domains 表）
@@ -1542,6 +1561,12 @@ func (h *TaskHandler) GetStaticReport(c *gin.Context) {
 		}
 	}
 
+	// 解析壳检测指标
+	var packerIndicators []string
+	if task.StaticReport.PackerIndicators != "" {
+		json.Unmarshal([]byte(task.StaticReport.PackerIndicators), &packerIndicators)
+	}
+
 	response := map[string]interface{}{
 		"task_id":                   task.StaticReport.TaskID,
 		"analyzer":                  task.StaticReport.Analyzer,
@@ -1570,6 +1595,14 @@ func (h *TaskHandler) GetStaticReport(c *gin.Context) {
 		"deep_analysis_duration_ms": task.StaticReport.DeepAnalysisDurationMs,
 		"needs_deep_analysis_reason": task.StaticReport.NeedsDeepAnalysisReason,
 		"analyzed_at":               task.StaticReport.AnalyzedAt,
+		// 壳检测相关
+		"is_packed":                    task.StaticReport.IsPacked,
+		"packer_name":                  task.StaticReport.PackerName,
+		"packer_type":                  task.StaticReport.PackerType,
+		"packer_confidence":            task.StaticReport.PackerConfidence,
+		"packer_indicators":            packerIndicators,
+		"needs_dynamic_unpacking":      task.StaticReport.NeedsDynamicUnpacking,
+		"packer_detection_duration_ms": task.StaticReport.PackerDetectionDurationMs,
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -2044,4 +2077,3 @@ func (h *TaskHandler) formatDeveloperInfo(info string) string {
 	}
 	return html.EscapeString(info)
 }
-
