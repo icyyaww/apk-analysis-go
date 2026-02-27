@@ -212,8 +212,8 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 	// 步骤6.1: 获取主域名
 	mainDomain := primaryResult.PrimaryDomain
 	if mainDomain == "" {
-		s.logger.WithField("task_id", taskID).Warn("⚠️ [步骤6.1] 未识别到主域名，将提取所有域名")
-		mainDomain = "" // 继续执行，但不过滤子域名
+		s.logger.WithField("task_id", taskID).Warn("⚠️ [步骤6.1] 未识别到主域名，将仅保留应用服务器域名")
+		mainDomain = "" // 严格模式：仅保留应用服务器域名
 	} else {
 		s.logger.WithFields(logrus.Fields{
 			"task_id":     taskID,
@@ -280,9 +280,6 @@ func (s *AnalysisService) AnalyzeTask(ctx context.Context, taskID string) error 
 			} else if strings.HasSuffix(domain, "."+mainDomain) {
 				isRelated = true
 			}
-		} else {
-			// 如果没有主域名，接受所有域名
-			isRelated = true
 		}
 
 		// 新增：URL分类中的应用服务器域名也保留
@@ -790,10 +787,12 @@ func (s *AnalysisService) saveToDB(
 ) error {
 	// 构建 DomainAnalysis 对象
 	now := time.Now()
+	confidence := primaryResult.Confidence // 提取置信度
 	domainAnalysis := &appDomain.TaskDomainAnalysis{
-		TaskID:        taskID,
-		PrimaryDomain: primaryResult.PrimaryDomain, // 🔧 修复：添加 PrimaryDomain 字段
-		AnalyzedAt:    &now,                        // 🔧 修复：添加 AnalyzedAt 字段
+		TaskID:                  taskID,
+		PrimaryDomain:           primaryResult.PrimaryDomain, // 🔧 修复：添加 PrimaryDomain 字段
+		PrimaryDomainConfidence: &confidence,                 // 新增：保存置信度到独立字段，优化查询
+		AnalyzedAt:              &now,                        // 🔧 修复：添加 AnalyzedAt 字段
 	}
 
 	// 保存主域名分析结果
@@ -803,6 +802,7 @@ func (s *AnalysisService) saveToDB(
 	// 保存备案信息
 	beianJSON, _ := json.Marshal(beianResults)
 	domainAnalysis.DomainBeianJSON = string(beianJSON)
+	domainAnalysis.DomainBeianStatus = summarizeBeianStatus(beianResults)
 
 	// 转换 IP 结果为数组
 	ipResultArray := []IPLocationResult{}
@@ -827,6 +827,40 @@ func (s *AnalysisService) saveToDB(
 
 	// 保存 IP 归属地到 task_app_domains 表（新版本，支持更好的查询）
 	return s.saveAppDomainsToTable(ctx, taskID, ipResults)
+}
+
+func summarizeBeianStatus(results []*BeianResult) string {
+	if len(results) == 0 {
+		return ""
+	}
+
+	result := results[0]
+	status := string(result.Status)
+
+	switch result.Status {
+	case BeianStatusRegistered:
+		return "已备案"
+	case BeianStatusNotRegistered:
+		return "未备案"
+	case BeianStatusError:
+		if reason, ok := result.Info["reason"]; ok && strings.Contains(reason, "暂无数据") {
+			return "未备案"
+		}
+		return "查询失败"
+	case BeianStatusDisabled:
+		return "查询失败"
+	}
+
+	switch status {
+	case "ok", "已备案":
+		return "已备案"
+	case "not_found", "未备案":
+		return "未备案"
+	case "查询失败":
+		return "查询失败"
+	default:
+		return "查询失败"
+	}
 }
 
 // saveAppDomainsToTable 保存 IP 归属地到 task_app_domains 表

@@ -52,6 +52,12 @@ type TaskService interface {
 	// 获取任务列表（支持状态过滤、排除和搜索）
 	ListTasksWithSearch(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string) ([]*domain.Task, int64, error)
 
+	// 获取任务列表（支持状态过滤、排除、搜索和高级筛选）
+	ListTasksWithAdvancedFilters(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string, province string, isp string, beianStatus string) ([]*domain.Task, int64, error)
+
+	// 获取任务列表（支持所有筛选条件，包括完成时间和置信度）
+	ListTasksWithFilterOptions(ctx context.Context, page int, pageSize int, opts *repository.TaskFilterOptions) ([]*domain.Task, int64, error)
+
 	// 获取所有排队中的任务（不分页）
 	ListQueuedTasks(ctx context.Context) ([]*domain.Task, error)
 }
@@ -205,6 +211,14 @@ func (s *taskService) ListTasksWithStatusFilter(ctx context.Context, page int, p
 
 func (s *taskService) ListTasksWithSearch(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string) ([]*domain.Task, int64, error) {
 	return s.taskRepo.ListWithSearch(ctx, page, pageSize, excludeStatus, statusFilter, search)
+}
+
+func (s *taskService) ListTasksWithAdvancedFilters(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string, province string, isp string, beianStatus string) ([]*domain.Task, int64, error) {
+	return s.taskRepo.ListWithAdvancedFilters(ctx, page, pageSize, excludeStatus, statusFilter, search, province, isp, beianStatus)
+}
+
+func (s *taskService) ListTasksWithFilterOptions(ctx context.Context, page int, pageSize int, opts *repository.TaskFilterOptions) ([]*domain.Task, int64, error) {
+	return s.taskRepo.ListWithFilterOptions(ctx, page, pageSize, opts)
 }
 
 func (s *taskService) ListQueuedTasks(ctx context.Context) ([]*domain.Task, error) {

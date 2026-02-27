@@ -113,14 +113,14 @@ type Task struct {
 	APKName         string      `gorm:"type:varchar(255);not null" json:"apk_name"`
 	AppName         string      `gorm:"type:varchar(255)" json:"app_name,omitempty"`
 	PackageName     string      `gorm:"type:varchar(255)" json:"package_name,omitempty"`
-	Status          TaskStatus  `gorm:"type:varchar(20);not null;default:'queued'" json:"status"`
+	Status          TaskStatus  `gorm:"type:varchar(20);not null;default:'queued';index:idx_apk_tasks_status_completed_created,priority:1;index:idx_apk_tasks_status_started_created,priority:1" json:"status"`
 	ShouldStop      bool        `gorm:"default:false" json:"should_stop"`
 	FailureType     FailureType `gorm:"type:varchar(30);default:''" json:"failure_type,omitempty"`
 	ErrorMessage    string      `gorm:"type:text" json:"error_message,omitempty"`
 	RetryCount      int         `gorm:"type:tinyint;default:0" json:"retry_count"`
-	CreatedAt       time.Time  `gorm:"not null" json:"created_at"`
-	StartedAt       *time.Time `json:"started_at,omitempty"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	CreatedAt       time.Time  `gorm:"not null;index:idx_apk_tasks_status_completed_created,priority:3;index:idx_apk_tasks_status_started_created,priority:3" json:"created_at"`
+	StartedAt       *time.Time `gorm:"index:idx_apk_tasks_status_started_created,priority:2" json:"started_at,omitempty"`
+	CompletedAt     *time.Time `gorm:"index:idx_apk_tasks_status_completed_created,priority:2" json:"completed_at,omitempty"`
 	CurrentStep     string     `gorm:"type:varchar(255)" json:"current_step,omitempty"`
 	ProgressPercent int        `gorm:"type:tinyint;default:0" json:"progress_percent"`
 	DeviceConnected bool       `gorm:"default:false" json:"device_connected"`
@@ -162,18 +162,19 @@ func (TaskActivity) TableName() string {
 
 // TaskDomainAnalysis 域名分析表
 type TaskDomainAnalysis struct {
-	ID                    uint       `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskID                string     `gorm:"type:varchar(36);uniqueIndex:uk_task_id;not null" json:"task_id"`
-	PrimaryDomain         string     `gorm:"type:varchar(255)" json:"primary_domain,omitempty"`
-	PrimaryDomainJSON     string     `gorm:"type:longtext" json:"primary_domain_json,omitempty"`
-	DomainBeianStatus     string     `gorm:"type:varchar(50)" json:"domain_beian_status,omitempty"`
-	DomainBeianJSON       string     `gorm:"type:longtext" json:"domain_beian_json,omitempty"`
-	AppDomainsJSON        string     `gorm:"type:longtext" json:"app_domains_json,omitempty"`
-	URLAnalysisStatic     string     `gorm:"type:mediumtext" json:"url_analysis_static,omitempty"`
-	URLAnalysisDynamic    string     `gorm:"type:mediumtext" json:"url_analysis_dynamic,omitempty"`
-	URLClassificationJSON string     `gorm:"type:longtext" json:"url_classification_json,omitempty"` // 新增：URL分类结果
-	AnalyzedAt            *time.Time `json:"analyzed_at,omitempty"`
-	CreatedAt             time.Time  `json:"created_at"`
+	ID                       uint       `gorm:"primaryKey;autoIncrement" json:"id"`
+	TaskID                   string     `gorm:"type:varchar(36);uniqueIndex:uk_task_id;not null;index:idx_task_domain_beian_status_task,priority:2" json:"task_id"`
+	PrimaryDomain            string     `gorm:"type:varchar(255)" json:"primary_domain,omitempty"`
+	PrimaryDomainJSON        string     `gorm:"type:longtext" json:"primary_domain_json,omitempty"`
+	PrimaryDomainConfidence  *float64   `gorm:"type:decimal(5,4);index:idx_task_domain_confidence" json:"primary_domain_confidence,omitempty"` // 主域名置信度 0.0-1.0
+	DomainBeianStatus        string     `gorm:"type:varchar(50);index:idx_task_domain_beian_status_task,priority:1" json:"domain_beian_status,omitempty"`
+	DomainBeianJSON          string     `gorm:"type:longtext" json:"domain_beian_json,omitempty"`
+	AppDomainsJSON           string     `gorm:"type:longtext" json:"app_domains_json,omitempty"`
+	URLAnalysisStatic        string     `gorm:"type:mediumtext" json:"url_analysis_static,omitempty"`
+	URLAnalysisDynamic       string     `gorm:"type:mediumtext" json:"url_analysis_dynamic,omitempty"`
+	URLClassificationJSON    string     `gorm:"type:longtext" json:"url_classification_json,omitempty"` // 新增：URL分类结果
+	AnalyzedAt               *time.Time `json:"analyzed_at,omitempty"`
+	CreatedAt                time.Time  `json:"created_at"`
 }
 
 func (TaskDomainAnalysis) TableName() string {
@@ -183,10 +184,10 @@ func (TaskDomainAnalysis) TableName() string {
 // TaskAppDomain APP 域名归属地表
 type TaskAppDomain struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskID    string    `gorm:"type:varchar(36);index:idx_task_id;not null" json:"task_id"`
+	TaskID    string    `gorm:"type:varchar(36);index:idx_task_id;not null;index:idx_app_domain_province_task,priority:2" json:"task_id"`
 	Domain    string    `gorm:"type:varchar(255);index:idx_domain;not null" json:"domain"`
 	IP        string    `gorm:"type:varchar(45)" json:"ip,omitempty"`
-	Province  string    `gorm:"type:varchar(50)" json:"province,omitempty"`
+	Province  string    `gorm:"type:varchar(50);index:idx_app_domain_province_task,priority:1" json:"province,omitempty"`
 	City      string    `gorm:"type:varchar(50)" json:"city,omitempty"`
 	ISP       string    `gorm:"type:varchar(50)" json:"isp,omitempty"`
 	Source    string    `gorm:"type:varchar(50)" json:"source,omitempty"`

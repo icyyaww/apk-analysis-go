@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>APK Analysis Dashboard</title>
-    <!-- SheetJS for Excel export -->
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -285,6 +283,59 @@
             outline: none;
             border-color: #5B68FF;
             box-shadow: 0 0 0 3px rgba(91, 104, 255, 0.1);
+        }
+
+        /* Date Range & Confidence Filters */
+        .date-range-filter,
+        .confidence-filter {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .date-range-filter label,
+        .confidence-filter label {
+            font-size: 14px;
+            color: #64748B;
+            white-space: nowrap;
+        }
+
+        .filter-input {
+            padding: 8px 12px;
+            border: 1px solid #E2E8F0;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #1E293B;
+            background: white;
+            transition: all 0.3s;
+        }
+
+        .filter-input:hover {
+            border-color: #CBD5E1;
+        }
+
+        .filter-input:focus {
+            outline: none;
+            border-color: #5B68FF;
+            box-shadow: 0 0 0 3px rgba(91, 104, 255, 0.1);
+        }
+
+        .date-range-filter .filter-input {
+            width: 140px;
+            cursor: pointer;
+        }
+
+        .date-picker::-webkit-calendar-picker-indicator {
+            cursor: pointer;
+        }
+
+        .confidence-filter .filter-input {
+            width: 80px;
+        }
+
+        .date-separator {
+            color: #94A3B8;
+            font-size: 14px;
         }
 
         /* Table */
@@ -1122,12 +1173,12 @@
             <!-- Action Bar -->
             <div class="action-bar">
                 <div class="search-box">
-                    <input type="text" placeholder="搜索 APK 名称或包名..." id="search-input" oninput="filterTasksBySearch()">
+                    <input type="text" placeholder="搜索 APK 名称或包名..." id="search-input" oninput="updateExportButtonText()">
                     <span class="search-icon">🔍</span>
                 </div>
 
                 <!-- 高级筛选 -->
-                <select id="province-filter" class="filter-select" onchange="applyAdvancedFilters()">
+                <select id="province-filter" class="filter-select" onchange="updateExportButtonText()">
                     <option value="">全部省份</option>
                     <!-- 直辖市 -->
                     <option value="北京">北京</option>
@@ -1169,7 +1220,7 @@
                     <option value="澳门">澳门</option>
                 </select>
 
-                <select id="isp-filter" class="filter-select" onchange="applyAdvancedFilters()">
+                <select id="isp-filter" class="filter-select" onchange="updateExportButtonText()">
                     <option value="">全部ISP</option>
                     <option value="电信">电信</option>
                     <option value="移动">移动</option>
@@ -1198,22 +1249,31 @@
                     <option value="Akamai">Akamai</option>
                 </select>
 
-                <select id="beian-filter" class="filter-select" onchange="applyAdvancedFilters()">
+                <select id="beian-filter" class="filter-select" onchange="updateExportButtonText()">
                     <option value="">全部备案状态</option>
                     <option value="已备案">已备案</option>
                     <option value="未备案">未备案</option>
                     <option value="查询失败">查询失败</option>
                 </select>
 
+                <!-- 完成时间筛选 -->
+                <div class="date-range-filter">
+                    <label>完成时间:</label>
+                    <input type="date" id="completed-after" class="filter-input date-picker" onchange="updateExportButtonText()">
+                    <span class="date-separator">至</span>
+                    <input type="date" id="completed-before" class="filter-input date-picker" onchange="updateExportButtonText()">
+                </div>
+
+                <!-- 置信度筛选 -->
+                <div class="confidence-filter">
+                    <label>置信度:</label>
+                    <input type="number" id="min-confidence" class="filter-input" min="0" max="100" step="1" placeholder="最小%" onchange="updateExportButtonText()">
+                    <span class="date-separator">-</span>
+                    <input type="number" id="max-confidence" class="filter-input" min="0" max="100" step="1" placeholder="最大%" onchange="updateExportButtonText()">
+                </div>
+
+                <button class="action-btn" id="query-btn" type="button">🔎 查询</button>
                 <button class="action-btn" id="export-btn" onclick="exportFilteredTasks()">📥 导出全部</button>
-                <button class="btn-primary" onclick="showQueueModal()">
-                    <span>⏳</span>
-                    <span>队列管理</span>
-                </button>
-                <button class="btn-primary" onclick="showAIInteractionModal()" style="background: #10B981;">
-                    <span>🤖</span>
-                    <span>AI 交互监控</span>
-                </button>
             </div>
 
             <!-- Table -->
@@ -1611,8 +1671,9 @@
             loadStats();
             loadTasks();
             loadDashboard(); // 加载仪表盘数据（设备状态、最近任务等）
-            // Auto-refresh every 5 seconds
-            setInterval(loadTasks, 5000);
+            bindTaskQueryEvents();
+            // Auto-refresh every 30 seconds
+            setInterval(loadTasks, 30000);
             setInterval(loadStats, 10000);
             setInterval(loadDashboard, 5000); // 自动刷新仪表盘
         });
@@ -1757,6 +1818,29 @@
                     queryParams += `&search=${encodeURIComponent(searchQuery)}`;
                 }
 
+                // 添加完成时间筛选参数（直接从datetime-local输入读取）
+                const completedAfter = document.getElementById('completed-after').value;
+                const completedBefore = document.getElementById('completed-before').value;
+                if (completedAfter) {
+                    // datetime-local格式: 2024-01-15T10:30 -> ISO格式
+                    queryParams += `&completed_after=${encodeURIComponent(completedAfter)}`;
+                }
+                if (completedBefore) {
+                    queryParams += `&completed_before=${encodeURIComponent(completedBefore)}`;
+                }
+
+                // 添加置信度筛选参数（从number输入读取，转换为0-1范围）
+                const minConfInput = document.getElementById('min-confidence').value;
+                const maxConfInput = document.getElementById('max-confidence').value;
+                if (minConfInput !== '') {
+                    const minConf = parseFloat(minConfInput) / 100;  // 百分比转0-1
+                    queryParams += `&min_confidence=${minConf}`;
+                }
+                if (maxConfInput !== '') {
+                    const maxConf = parseFloat(maxConfInput) / 100;  // 百分比转0-1
+                    queryParams += `&max_confidence=${maxConf}`;
+                }
+
                 const response = await fetch(`/api/tasks?${queryParams}`);
                 const data = await response.json();
 
@@ -1784,17 +1868,53 @@
             }
         }
 
-        // 应用高级筛选
-        function applyAdvancedFilters() {
+        function bindTaskQueryEvents() {
+            const queryBtn = document.getElementById('query-btn');
+            if (queryBtn) {
+                queryBtn.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    runTaskQuery();
+                });
+            }
+
+            const searchInput = document.getElementById('search-input');
+            if (searchInput) {
+                searchInput.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        runTaskQuery();
+                    }
+                });
+            }
+        }
+
+        function showTasksLoading() {
+            const tbody = document.getElementById('tasks-tbody');
+            if (!tbody) return;
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="13" style="text-align: center; padding: 40px;">
+                        <div class="loading-spinner"></div>
+                        <div style="margin-top: 16px; color: #64748B;">正在加载任务...</div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        // 手动触发查询（同步所有筛选条件）
+        function runTaskQuery() {
             provinceFilter = document.getElementById('province-filter').value;
             ispFilter = document.getElementById('isp-filter').value;
             beianFilter = document.getElementById('beian-filter').value;
+            searchQuery = document.getElementById('search-input').value.trim();
+            // 完成时间和置信度直接从输入框读取，无需存储到变量
 
             // 更新导出按钮文案
             updateExportButtonText();
 
             // 重置到第一页并重新加载
             currentPage = 1;
+            showTasksLoading();
             loadTasks();
         }
 
@@ -1808,29 +1928,7 @@
             });
             event.target.classList.add('active');
 
-            // 重新从服务端加载数据（带状态过滤）
-            loadTasks();
-        }
-
-        // 防抖定时器
-        let searchDebounceTimer = null;
-
-        function filterTasksBySearch() {
-            searchQuery = document.getElementById('search-input').value.trim();
-
-            // 更新导出按钮文案
-            updateExportButtonText();
-
-            // 使用防抖，避免频繁请求
-            if (searchDebounceTimer) {
-                clearTimeout(searchDebounceTimer);
-            }
-
-            searchDebounceTimer = setTimeout(() => {
-                // 重置到第一页并重新从服务端加载（带搜索参数）
-                currentPage = 1;
-                loadTasks();
-            }, 300); // 300ms 防抖
+            // 状态切换后等待用户点击查询
         }
 
         function renderTasks() {
@@ -2580,22 +2678,6 @@
             }
         }
 
-        // 获取当前筛选条件描述
-        function getFilterDescription() {
-            const parts = [];
-            const province = document.getElementById('province-filter').value;
-            const isp = document.getElementById('isp-filter').value;
-            const beian = document.getElementById('beian-filter').value;
-            const search = document.getElementById('search-input').value.trim();
-
-            if (province) parts.push(province);
-            if (isp) parts.push(isp);
-            if (beian) parts.push(beian);
-            if (search) parts.push(`搜索"${search}"`);
-
-            return parts.length > 0 ? parts.join('_') : '全部';
-        }
-
         // 更新导出按钮文案
         function updateExportButtonText() {
             const btn = document.getElementById('export-btn');
@@ -2605,168 +2687,59 @@
             const isp = document.getElementById('isp-filter').value;
             const beian = document.getElementById('beian-filter').value;
             const search = document.getElementById('search-input').value.trim();
+            const completedAfter = document.getElementById('completed-after').value;
+            const completedBefore = document.getElementById('completed-before').value;
+            const minConfidence = document.getElementById('min-confidence').value;
+            const maxConfidence = document.getElementById('max-confidence').value;
 
-            const hasFilter = province || isp || beian || search;
+            const hasFilter = province || isp || beian || search || completedAfter || completedBefore || minConfidence || maxConfidence;
             btn.textContent = hasFilter ? '📥 导出筛选结果' : '📥 导出全部';
-        }
-
-        // 获取备案状态文本（与页面 formatBeian() 逻辑保持一致）
-        function getBeianStatusText(task) {
-            if (!task.domain_beian_status) return '未查询';
-
-            try {
-                const data = JSON.parse(task.domain_beian_status);
-                if (Array.isArray(data) && data.length > 0) {
-                    const result = data[0];
-                    // 1. status = 'registered' 表示已备案
-                    if (result.status === 'registered') {
-                        return '已备案';
-                    }
-                    // 2. status = 'error' 表示查询失败或未备案
-                    else if (result.status === 'error') {
-                        const reason = result.info?.reason || result.error;
-                        if (reason && reason.includes('暂无数据')) {
-                            return '未备案';
-                        }
-                        return '查询失败';
-                    }
-                    // 3. 兼容旧格式: beian_info.status
-                    else if (result.beian_info?.status === 'registered') {
-                        return '已备案';
-                    }
-                }
-                return '未查询';
-            } catch (e) {
-                return '解析错误';
-            }
         }
 
         // 导出筛选结果（结合所有筛选条件）
         async function exportFilteredTasks() {
+            const btn = document.getElementById('export-btn');
             try {
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = '📥 导出中...';
+                }
+
                 // 获取当前筛选条件
                 const province = document.getElementById('province-filter').value;
                 const isp = document.getElementById('isp-filter').value;
                 const beian = document.getElementById('beian-filter').value;
                 const search = document.getElementById('search-input').value.trim();
+                const completedAfter = document.getElementById('completed-after').value;
+                const completedBefore = document.getElementById('completed-before').value;
+                const minConfidence = document.getElementById('min-confidence').value;
+                const maxConfidence = document.getElementById('max-confidence').value;
 
                 // 构建 API 请求参数（使用导出专用接口，不分页）
-                let url = '/api/tasks/export?status=completed';
+                let url = '/api/tasks/export?status=completed&format=xlsx';
                 if (province) url += `&province=${encodeURIComponent(province)}`;
                 if (isp) url += `&isp=${encodeURIComponent(isp)}`;
                 if (beian) url += `&beian_status=${encodeURIComponent(beian)}`;
                 if (search) url += `&search=${encodeURIComponent(search)}`;
+                if (completedAfter) url += `&completed_after=${encodeURIComponent(completedAfter)}`;
+                if (completedBefore) url += `&completed_before=${encodeURIComponent(completedBefore)}`;
+                if (minConfidence) url += `&min_confidence=${parseFloat(minConfidence) / 100}`;
+                if (maxConfidence) url += `&max_confidence=${parseFloat(maxConfidence) / 100}`;
 
-                const response = await fetch(url);
-                const data = await response.json();
-
-                if (!data.tasks || data.tasks.length === 0) {
-                    alert('没有找到符合条件的任务');
-                    return;
-                }
-
-                // 构建导出数据
-                const rows = [];
-                const today = new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' });
-
-                for (const task of data.tasks) {
-                    // 获取应用名称和备案状态
-                    const appName = task.static_report?.app_name || task.apk_name?.replace('.apk', '') || '';
-                    const packageName = task.package_name || '';
-                    const beianStatus = getBeianStatusText(task);
-
-                    // 处理域名列表
-                    if (task.app_domains && task.app_domains.length > 0) {
-                        let hasMatchedDomain = false;
-                        for (const domainInfo of task.app_domains) {
-                            // 如果有省份筛选，过滤不匹配的域名
-                            if (province && domainInfo.province && !domainInfo.province.includes(province)) {
-                                continue;
-                            }
-                            // 如果有 ISP 筛选，过滤不匹配的域名
-                            if (isp && domainInfo.isp && !domainInfo.isp.includes(isp)) {
-                                continue;
-                            }
-
-                            rows.push([
-                                appName,
-                                packageName,
-                                domainInfo.domain || '',
-                                domainInfo.ip || '',
-                                domainInfo.province || '',
-                                domainInfo.isp || '',
-                                beianStatus,
-                                today
-                            ]);
-                            hasMatchedDomain = true;
-                        }
-
-                        // 如果该任务的所有域名都被过滤掉了，但任务本身符合条件，仍然添加一条记录
-                        if (!hasMatchedDomain) {
-                            rows.push([
-                                appName,
-                                packageName,
-                                '',
-                                '',
-                                '',
-                                '',
-                                beianStatus,
-                                today
-                            ]);
-                        }
-                    } else {
-                        // 没有域名信息的情况
-                        rows.push([
-                            appName,
-                            packageName,
-                            '',
-                            '',
-                            '',
-                            '',
-                            beianStatus,
-                            today
-                        ]);
-                    }
-                }
-
-                if (rows.length === 0) {
-                    alert('没有找到符合条件的数据');
-                    return;
-                }
-
-                // 生成 Excel 文件 (使用 SheetJS)
-                const headers = ['APP名称', '包名', '接入域名', '接入IP', '归属地', '运营商', '备案状态', '发现时间'];
-
-                // 创建工作簿和工作表
-                const wb = XLSX.utils.book_new();
-                const wsData = [headers, ...rows];
-                const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-                // 设置列宽
-                ws['!cols'] = [
-                    { wch: 25 },  // APP名称
-                    { wch: 35 },  // 包名
-                    { wch: 30 },  // 接入域名
-                    { wch: 18 },  // 接入IP
-                    { wch: 15 },  // 归属地
-                    { wch: 12 },  // 运营商
-                    { wch: 10 },  // 备案状态
-                    { wch: 15 }   // 发现时间
-                ];
-
-                // 生成工作表名称和文件名
-                const filterDesc = getFilterDescription();
-                const sheetName = filterDesc.length > 31 ? filterDesc.substring(0, 31) : filterDesc;  // Excel 工作表名最长 31 字符
-                XLSX.utils.book_append_sheet(wb, ws, sheetName);
-
-                // 导出文件
-                const filename = `APP分析_${filterDesc}_${new Date().toISOString().slice(0,10)}.xlsx`;
-                XLSX.writeFile(wb, filename);
-
-                alert(`成功导出 ${rows.length} 条记录`);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = '';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
             } catch (error) {
                 console.error('导出失败:', error);
                 alert('导出失败: ' + error.message);
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    updateExportButtonText();
+                }
             }
         }
 

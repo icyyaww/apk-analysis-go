@@ -2,18 +2,24 @@ package handlers
 
 import (
 	"bufio"
+	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/apk-analysis/apk-analysis-go/internal/domain"
+	"github.com/apk-analysis/apk-analysis-go/internal/repository"
 	"github.com/apk-analysis/apk-analysis-go/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"github.com/xuri/excelize/v2"
 )
 
 // TaskHandler 任务处理器
@@ -32,20 +38,28 @@ func NewTaskHandler(taskService service.TaskService, logger *logrus.Logger) *Tas
 
 // ListTasks 获取任务列表
 // GET /api/tasks?page=1&page_size=20&status=completed&exclude_status=queued&province=广东&isp=阿里云&beian_status=已备案&search=关键词
+// GET /api/tasks?completed_after=2025-01-01&completed_before=2025-12-31  // 完成时间范围
+// GET /api/tasks?min_confidence=0.8&max_confidence=1.0  // 置信度范围 (0.0-1.0)
 // 支持分页参数，默认每页20条
 // 支持状态过滤：status=completed 或 exclude_status=queued
 // 支持域名归属地过滤：province=广东&isp=阿里云
 // 支持备案状态过滤：beian_status=已备案/未备案/查询失败
 // 支持搜索：search=关键词（搜索APK名称、应用名称、包名）
+// 支持完成时间筛选：completed_after=2025-01-01&completed_before=2025-12-31
+// 支持置信度筛选：min_confidence=0.8&max_confidence=1.0
 func (h *TaskHandler) ListTasks(c *gin.Context) {
 	pageStr := c.DefaultQuery("page", "1")
 	pageSizeStr := c.DefaultQuery("page_size", "20")
-	statusFilter := c.Query("status")            // 例如: status=completed
-	excludeStatus := c.Query("exclude_status")   // 例如: exclude_status=queued
-	provinceFilter := c.Query("province")        // 例如: province=广东
-	ispFilter := c.Query("isp")                  // 例如: isp=阿里云
-	beianStatusFilter := c.Query("beian_status") // 例如: beian_status=已备案
-	searchQuery := c.Query("search")             // 例如: search=微信（搜索APK名称、应用名称、包名）
+	statusFilter := c.Query("status")              // 例如: status=completed
+	excludeStatus := c.Query("exclude_status")     // 例如: exclude_status=queued
+	provinceFilter := c.Query("province")          // 例如: province=广东
+	ispFilter := c.Query("isp")                    // 例如: isp=阿里云
+	beianStatusFilter := c.Query("beian_status")   // 例如: beian_status=已备案
+	searchQuery := c.Query("search")               // 例如: search=微信（搜索APK名称、应用名称、包名）
+	completedAfterStr := c.Query("completed_after")   // 例如: completed_after=2025-01-01
+	completedBeforeStr := c.Query("completed_before") // 例如: completed_before=2025-12-31
+	minConfidenceStr := c.Query("min_confidence")     // 例如: min_confidence=0.8
+	maxConfidenceStr := c.Query("max_confidence")     // 例如: max_confidence=1.0
 
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page <= 0 {
@@ -62,17 +76,66 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 		pageSize = 100
 	}
 
-	// 判断是否有需要内存过滤的条件（省份、ISP、备案状态需要内存过滤）
-	hasMemoryFilter := provinceFilter != "" || ispFilter != "" || beianStatusFilter != ""
+	// 解析完成时间参数（使用CST时区，与用户所在时区一致）
+	cst, _ := time.LoadLocation("Asia/Shanghai")
+	var completedAfter, completedBefore *time.Time
+	if completedAfterStr != "" {
+		if t, err := time.ParseInLocation("2006-01-02", completedAfterStr, cst); err == nil {
+			// 转换为UTC以便与数据库比较
+			utcTime := t.UTC()
+			completedAfter = &utcTime
+		} else if t, err := time.ParseInLocation(time.RFC3339, completedAfterStr, cst); err == nil {
+			utcTime := t.UTC()
+			completedAfter = &utcTime
+		}
+	}
+	if completedBeforeStr != "" {
+		if t, err := time.ParseInLocation("2006-01-02", completedBeforeStr, cst); err == nil {
+			// 设置为当天CST的最后一秒 (23:59:59 CST)，然后转换为UTC
+			endOfDay := t.Add(24*time.Hour - time.Second).UTC()
+			completedBefore = &endOfDay
+		} else if t, err := time.ParseInLocation(time.RFC3339, completedBeforeStr, cst); err == nil {
+			utcTime := t.UTC()
+			completedBefore = &utcTime
+		}
+	}
+
+	// 解析置信度参数
+	var minConfidence, maxConfidence *float64
+	if minConfidenceStr != "" {
+		if v, err := strconv.ParseFloat(minConfidenceStr, 64); err == nil && v >= 0 && v <= 1 {
+			minConfidence = &v
+		}
+	}
+	if maxConfidenceStr != "" {
+		if v, err := strconv.ParseFloat(maxConfidenceStr, 64); err == nil && v >= 0 && v <= 1 {
+			maxConfidence = &v
+		}
+	}
+
+	// 判断是否有高级筛选条件
+	hasAdvancedFilter := provinceFilter != "" || ispFilter != "" || beianStatusFilter != "" ||
+		completedAfter != nil || completedBefore != nil ||
+		minConfidence != nil || maxConfidence != nil
 
 	var tasks []*domain.Task
 	var total int64
 
-	if hasMemoryFilter {
-		// 有省份/ISP/备案过滤时，需要查询所有符合状态条件的数据再在内存中过滤
-		// 查询上限设为 5000 条，避免内存溢出
-		queryLimit := 5000
-		tasks, _, err = h.taskService.ListTasksWithSearch(c.Request.Context(), 1, queryLimit, excludeStatus, statusFilter, searchQuery)
+	if hasAdvancedFilter {
+		// 使用新的 FilterOptions 方法
+		opts := &repository.TaskFilterOptions{
+			ExcludeStatus:   excludeStatus,
+			StatusFilter:    statusFilter,
+			Search:          searchQuery,
+			Province:        provinceFilter,
+			ISP:             ispFilter,
+			BeianStatus:     beianStatusFilter,
+			CompletedAfter:  completedAfter,
+			CompletedBefore: completedBefore,
+			MinConfidence:   minConfidence,
+			MaxConfidence:   maxConfidence,
+		}
+		tasks, total, err = h.taskService.ListTasksWithFilterOptions(c.Request.Context(), page, pageSize, opts)
 	} else {
 		// 仅有 status 和 exclude_status 时，使用数据库分页（支持搜索）
 		tasks, total, err = h.taskService.ListTasksWithSearch(c.Request.Context(), page, pageSize, excludeStatus, statusFilter, searchQuery)
@@ -84,99 +147,6 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 			"error": "获取任务列表失败",
 		})
 		return
-	}
-
-	// 如果有内存过滤条件，需要在内存中过滤
-	var filteredTasks []*domain.Task
-	if hasMemoryFilter {
-		for _, task := range tasks {
-			// 1. 任务状态过滤
-			if statusFilter != "" && string(task.Status) != statusFilter {
-				continue
-			}
-
-			// 2. 域名归属地过滤（省份、ISP）
-			if provinceFilter != "" || ispFilter != "" {
-				matched := false
-				if len(task.AppDomains) > 0 {
-					for _, appDomain := range task.AppDomains {
-						provinceMatch := provinceFilter == "" || appDomain.Province == provinceFilter
-						ispMatch := ispFilter == "" || strings.Contains(appDomain.ISP, ispFilter)
-
-						if provinceMatch && ispMatch {
-							matched = true
-							break
-						}
-					}
-				}
-				if !matched {
-					continue
-				}
-			}
-
-			// 3. 备案状态过滤
-			if beianStatusFilter != "" {
-				if task.DomainAnalysis == nil || task.DomainAnalysis.DomainBeianJSON == "" {
-					continue
-				}
-
-				var beianList []map[string]interface{}
-				var beianSingle map[string]interface{}
-
-				if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianList); err != nil {
-					if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianSingle); err != nil {
-						continue
-					}
-					beianList = []map[string]interface{}{beianSingle}
-				}
-
-				if len(beianList) == 0 {
-					continue
-				}
-
-				status := ""
-				if statusVal, ok := beianList[0]["status"].(string); ok {
-					status = statusVal
-				}
-
-				reason := ""
-				if info, ok := beianList[0]["info"].(map[string]interface{}); ok {
-					if reasonVal, ok := info["reason"].(string); ok {
-						reason = reasonVal
-					}
-				}
-
-				matched := false
-				switch beianStatusFilter {
-				case "已备案":
-					matched = status == "registered" || status == "ok" || status == "已备案"
-				case "未备案":
-					matched = (status == "error" && strings.Contains(reason, "暂无数据")) || status == "not_found" || status == "未备案"
-				case "查询失败":
-					matched = (status == "error" && !strings.Contains(reason, "暂无数据")) || status == "查询失败"
-				default:
-					matched = status == beianStatusFilter
-				}
-
-				if !matched {
-					continue
-				}
-			}
-
-			filteredTasks = append(filteredTasks, task)
-		}
-
-		// 手动分页
-		startIdx := (page - 1) * pageSize
-		endIdx := startIdx + pageSize
-		if startIdx >= len(filteredTasks) {
-			startIdx = len(filteredTasks)
-		}
-		if endIdx > len(filteredTasks) {
-			endIdx = len(filteredTasks)
-		}
-		tasks = filteredTasks[startIdx:endIdx]
-		total = int64(len(filteredTasks))
 	}
 
 	// 转换为响应格式
@@ -207,12 +177,24 @@ func (h *TaskHandler) ExportTasks(c *gin.Context) {
 	ispFilter := c.Query("isp")                  // 例如: isp=阿里云
 	beianStatusFilter := c.Query("beian_status") // 例如: beian_status=已备案
 	searchQuery := c.Query("search")             // 例如: search=微信
+	format := strings.ToLower(c.DefaultQuery("format", "json"))
 
-	// 导出最大限制 10000 条
-	maxExportLimit := 10000
+	if format == "csv" {
+		h.exportTasksCSV(c, excludeStatus, statusFilter, searchQuery, provinceFilter, ispFilter, beianStatusFilter)
+		return
+	}
 
-	// 查询所有符合条件的数据（不分页）
-	tasks, _, err := h.taskService.ListTasksWithSearch(c.Request.Context(), 1, maxExportLimit, excludeStatus, statusFilter, searchQuery)
+	if format == "xlsx" {
+		h.exportTasksXLSX(c, excludeStatus, statusFilter, searchQuery, provinceFilter, ispFilter, beianStatusFilter)
+		return
+	}
+
+	// 转换为响应格式
+	var taskList []map[string]interface{}
+	err := h.forEachExportTask(c.Request.Context(), excludeStatus, statusFilter, searchQuery, provinceFilter, ispFilter, beianStatusFilter, func(task *domain.Task) error {
+		taskList = append(taskList, h.taskToResponse(task))
+		return nil
+	})
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to export tasks")
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -221,95 +203,353 @@ func (h *TaskHandler) ExportTasks(c *gin.Context) {
 		return
 	}
 
-	// 如果有内存过滤条件（省份、ISP、备案状态），在内存中过滤
-	var filteredTasks []*domain.Task
-	hasMemoryFilter := provinceFilter != "" || ispFilter != "" || beianStatusFilter != ""
-
-	if hasMemoryFilter {
-		for _, task := range tasks {
-			// 域名归属地过滤（省份、ISP）
-			if provinceFilter != "" || ispFilter != "" {
-				matched := false
-				if len(task.AppDomains) > 0 {
-					for _, appDomain := range task.AppDomains {
-						provinceMatch := provinceFilter == "" || appDomain.Province == provinceFilter
-						ispMatch := ispFilter == "" || strings.Contains(appDomain.ISP, ispFilter)
-
-						if provinceMatch && ispMatch {
-							matched = true
-							break
-						}
-					}
-				}
-				if !matched {
-					continue
-				}
-			}
-
-			// 备案状态过滤
-			if beianStatusFilter != "" {
-				if task.DomainAnalysis == nil || task.DomainAnalysis.DomainBeianJSON == "" {
-					continue
-				}
-
-				var beianList []map[string]interface{}
-				var beianSingle map[string]interface{}
-
-				if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianList); err != nil {
-					if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianSingle); err != nil {
-						continue
-					}
-					beianList = []map[string]interface{}{beianSingle}
-				}
-
-				if len(beianList) == 0 {
-					continue
-				}
-
-				status := ""
-				if statusVal, ok := beianList[0]["status"].(string); ok {
-					status = statusVal
-				}
-
-				reason := ""
-				if info, ok := beianList[0]["info"].(map[string]interface{}); ok {
-					if reasonVal, ok := info["reason"].(string); ok {
-						reason = reasonVal
-					}
-				}
-
-				matched := false
-				switch beianStatusFilter {
-				case "已备案":
-					matched = status == "registered" || status == "ok" || status == "已备案"
-				case "未备案":
-					matched = (status == "error" && strings.Contains(reason, "暂无数据")) || status == "not_found" || status == "未备案"
-				case "查询失败":
-					matched = (status == "error" && !strings.Contains(reason, "暂无数据")) || status == "查询失败"
-				default:
-					matched = status == beianStatusFilter
-				}
-
-				if !matched {
-					continue
-				}
-			}
-
-			filteredTasks = append(filteredTasks, task)
-		}
-		tasks = filteredTasks
-	}
-
-	// 转换为响应格式
-	taskList := make([]map[string]interface{}, len(tasks))
-	for i, task := range tasks {
-		taskList[i] = h.taskToResponse(task)
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"tasks": taskList,
 		"total": len(taskList),
 	})
+}
+
+func (h *TaskHandler) exportTasksCSV(
+	c *gin.Context,
+	excludeStatus string,
+	statusFilter string,
+	searchQuery string,
+	provinceFilter string,
+	ispFilter string,
+	beianStatusFilter string,
+) {
+	filterDesc := buildExportFilterDescription(provinceFilter, ispFilter, beianStatusFilter, searchQuery)
+	fileName := fmt.Sprintf("APP分析_%s_%s.csv", filterDesc, time.Now().Format("2006-01-02"))
+	escapedFileName := url.PathEscape(fileName)
+
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+escapedFileName)
+	c.Header("Cache-Control", "no-store")
+	c.Status(http.StatusOK)
+
+	if _, err := c.Writer.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		h.logger.WithError(err).Warn("Failed to write CSV BOM")
+		return
+	}
+
+	writer := csv.NewWriter(c.Writer)
+	if err := writer.Write([]string{"APP名称", "包名", "接入域名", "接入IP", "归属地", "运营商", "备案状态", "发现时间"}); err != nil {
+		h.logger.WithError(err).Warn("Failed to write CSV header")
+		return
+	}
+
+	today := time.Now().Format("2006-01-02")
+
+	err := h.forEachExportTask(c.Request.Context(), excludeStatus, statusFilter, searchQuery, provinceFilter, ispFilter, beianStatusFilter, func(task *domain.Task) error {
+		appName := resolveExportAppName(task)
+		packageName := task.PackageName
+		beianStatus := getBeianStatusForExport(task)
+
+		appDomains := resolveExportAppDomains(task)
+		hasMatchedDomain := false
+		if len(appDomains) > 0 {
+			for _, domainInfo := range appDomains {
+				if provinceFilter != "" && !strings.Contains(domainInfo.Province, provinceFilter) {
+					continue
+				}
+				if ispFilter != "" && !strings.Contains(domainInfo.ISP, ispFilter) {
+					continue
+				}
+
+				if err := writer.Write([]string{
+					appName,
+					packageName,
+					domainInfo.Domain,
+					domainInfo.IP,
+					domainInfo.Province,
+					domainInfo.ISP,
+					beianStatus,
+					today,
+				}); err != nil {
+					return err
+				}
+				hasMatchedDomain = true
+			}
+		}
+
+		if !hasMatchedDomain {
+			if err := writer.Write([]string{
+				appName,
+				packageName,
+				"",
+				"",
+				"",
+				"",
+				beianStatus,
+				today,
+			}); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		h.logger.WithError(err).Warn("Failed to export CSV data")
+	}
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		h.logger.WithError(err).Warn("Failed to flush CSV response")
+	}
+}
+
+func (h *TaskHandler) exportTasksXLSX(
+	c *gin.Context,
+	excludeStatus string,
+	statusFilter string,
+	searchQuery string,
+	provinceFilter string,
+	ispFilter string,
+	beianStatusFilter string,
+) {
+	filterDesc := buildExportFilterDescription(provinceFilter, ispFilter, beianStatusFilter, searchQuery)
+	fileName := fmt.Sprintf("APP分析_%s_%s.xlsx", filterDesc, time.Now().Format("2006-01-02"))
+	escapedFileName := url.PathEscape(fileName)
+
+	c.Header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Header("Content-Disposition", "attachment; filename*=UTF-8''"+escapedFileName)
+	c.Header("Cache-Control", "no-store")
+
+	file := excelize.NewFile()
+	sheetName := "Sheet1"
+	displaySheetName := filterDesc
+	if len(displaySheetName) > 31 {
+		displaySheetName = displaySheetName[:31]
+	}
+	if displaySheetName == "" {
+		displaySheetName = sheetName
+	}
+	file.SetSheetName(sheetName, displaySheetName)
+	sheetName = displaySheetName
+
+	streamWriter, err := file.NewStreamWriter(sheetName)
+	if err != nil {
+		h.logger.WithError(err).Warn("Failed to create XLSX stream writer")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "导出任务列表失败",
+		})
+		return
+	}
+
+	rowIndex := 1
+	headerCell, _ := excelize.CoordinatesToCellName(1, rowIndex)
+	if err := streamWriter.SetRow(headerCell, []interface{}{"APP名称", "包名", "接入域名", "接入IP", "归属地", "运营商", "备案状态", "发现时间"}); err != nil {
+		h.logger.WithError(err).Warn("Failed to write XLSX header")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "导出任务列表失败",
+		})
+		return
+	}
+	rowIndex++
+
+	today := time.Now().Format("2006-01-02")
+	err = h.forEachExportTask(c.Request.Context(), excludeStatus, statusFilter, searchQuery, provinceFilter, ispFilter, beianStatusFilter, func(task *domain.Task) error {
+		appName := resolveExportAppName(task)
+		packageName := task.PackageName
+		beianStatus := getBeianStatusForExport(task)
+
+		appDomains := resolveExportAppDomains(task)
+		hasMatchedDomain := false
+		if len(appDomains) > 0 {
+			for _, domainInfo := range appDomains {
+				if provinceFilter != "" && !strings.Contains(domainInfo.Province, provinceFilter) {
+					continue
+				}
+				if ispFilter != "" && !strings.Contains(domainInfo.ISP, ispFilter) {
+					continue
+				}
+
+				cell, _ := excelize.CoordinatesToCellName(1, rowIndex)
+				if err := streamWriter.SetRow(cell, []interface{}{
+					appName,
+					packageName,
+					domainInfo.Domain,
+					domainInfo.IP,
+					domainInfo.Province,
+					domainInfo.ISP,
+					beianStatus,
+					today,
+				}); err != nil {
+					return err
+				}
+				rowIndex++
+				hasMatchedDomain = true
+			}
+		}
+
+		if !hasMatchedDomain {
+			cell, _ := excelize.CoordinatesToCellName(1, rowIndex)
+			if err := streamWriter.SetRow(cell, []interface{}{
+				appName,
+				packageName,
+				"",
+				"",
+				"",
+				"",
+				beianStatus,
+				today,
+			}); err != nil {
+				return err
+			}
+			rowIndex++
+		}
+
+		return nil
+	})
+	if err != nil {
+		h.logger.WithError(err).Warn("Failed to export XLSX data")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "导出任务列表失败",
+		})
+		return
+	}
+
+	if err := streamWriter.Flush(); err != nil {
+		h.logger.WithError(err).Warn("Failed to flush XLSX stream")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "导出任务列表失败",
+		})
+		return
+	}
+
+	if _, err := file.WriteTo(c.Writer); err != nil {
+		h.logger.WithError(err).Warn("Failed to write XLSX response")
+	}
+}
+
+func (h *TaskHandler) forEachExportTask(
+	ctx context.Context,
+	excludeStatus string,
+	statusFilter string,
+	searchQuery string,
+	provinceFilter string,
+	ispFilter string,
+	beianStatusFilter string,
+	handle func(task *domain.Task) error,
+) error {
+	const exportBatchSize = 1000
+	page := 1
+	for {
+		tasks, _, err := h.taskService.ListTasksWithAdvancedFilters(ctx, page, exportBatchSize, excludeStatus, statusFilter, searchQuery, provinceFilter, ispFilter, beianStatusFilter)
+		if err != nil {
+			return err
+		}
+		if len(tasks) == 0 {
+			break
+		}
+		for _, task := range tasks {
+			if err := handle(task); err != nil {
+				return err
+			}
+		}
+		if len(tasks) < exportBatchSize {
+			break
+		}
+		page++
+	}
+	return nil
+}
+
+func resolveExportAppName(task *domain.Task) string {
+	if task.AppName != "" {
+		return task.AppName
+	}
+	return strings.TrimSuffix(task.APKName, ".apk")
+}
+
+func resolveExportAppDomains(task *domain.Task) []domain.TaskAppDomain {
+	appDomains := task.AppDomains
+	if len(appDomains) == 0 && task.DomainAnalysis != nil && task.DomainAnalysis.AppDomainsJSON != "" {
+		var appDomainsFromJSON []domain.TaskAppDomain
+		if err := json.Unmarshal([]byte(task.DomainAnalysis.AppDomainsJSON), &appDomainsFromJSON); err == nil {
+			appDomains = appDomainsFromJSON
+		}
+	}
+	return appDomains
+}
+
+func buildExportFilterDescription(province string, isp string, beian string, search string) string {
+	parts := []string{}
+	if province != "" {
+		parts = append(parts, province)
+	}
+	if isp != "" {
+		parts = append(parts, isp)
+	}
+	if beian != "" {
+		parts = append(parts, beian)
+	}
+	if search != "" {
+		parts = append(parts, "搜索"+search)
+	}
+	if len(parts) == 0 {
+		return "全部"
+	}
+	return strings.Join(parts, "_")
+}
+
+func getBeianStatusForExport(task *domain.Task) string {
+	if task.DomainAnalysis == nil {
+		return "未查询"
+	}
+	if task.DomainAnalysis.DomainBeianStatus != "" {
+		return task.DomainAnalysis.DomainBeianStatus
+	}
+	if task.DomainAnalysis.DomainBeianJSON == "" {
+		return "未查询"
+	}
+
+	var beianList []map[string]interface{}
+	var beianSingle map[string]interface{}
+
+	if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianList); err != nil {
+		if err := json.Unmarshal([]byte(task.DomainAnalysis.DomainBeianJSON), &beianSingle); err != nil {
+			return "解析错误"
+		}
+		beianList = []map[string]interface{}{beianSingle}
+	}
+
+	if len(beianList) == 0 {
+		return "未查询"
+	}
+
+	status := ""
+	if statusVal, ok := beianList[0]["status"].(string); ok {
+		status = statusVal
+	}
+
+	reason := ""
+	if info, ok := beianList[0]["info"].(map[string]interface{}); ok {
+		if reasonVal, ok := info["reason"].(string); ok {
+			reason = reasonVal
+		}
+	}
+
+	switch status {
+	case "registered", "ok", "已备案":
+		return "已备案"
+	case "not_found", "not_registered", "未备案":
+		return "未备案"
+	case "error":
+		if strings.Contains(reason, "暂无数据") {
+			return "未备案"
+		}
+		return "查询失败"
+	case "查询失败":
+		return "查询失败"
+	default:
+		if status != "" {
+			return status
+		}
+	}
+
+	return "未查询"
 }
 
 // GetTask 获取单个任务详情
@@ -650,6 +890,23 @@ func (h *TaskHandler) taskToResponse(task *domain.Task) map[string]interface{} {
 			}
 		}
 		response["app_domains"] = appDomains
+	} else if task.DomainAnalysis != nil && task.DomainAnalysis.AppDomainsJSON != "" {
+		// 兼容旧数据源：从 AppDomainsJSON 填充 app_domains
+		var appDomainsFromJSON []domain.TaskAppDomain
+		if err := json.Unmarshal([]byte(task.DomainAnalysis.AppDomainsJSON), &appDomainsFromJSON); err == nil && len(appDomainsFromJSON) > 0 {
+			appDomains := make([]map[string]interface{}, len(appDomainsFromJSON))
+			for i, appDomain := range appDomainsFromJSON {
+				appDomains[i] = map[string]interface{}{
+					"domain":   appDomain.Domain,
+					"ip":       appDomain.IP,
+					"province": appDomain.Province,
+					"city":     appDomain.City,
+					"isp":      appDomain.ISP,
+					"source":   appDomain.Source,
+				}
+			}
+			response["app_domains"] = appDomains
+		}
 	}
 
 	// 添加 IP 列表 - 区分两种来源
@@ -1568,33 +1825,33 @@ func (h *TaskHandler) GetStaticReport(c *gin.Context) {
 	}
 
 	response := map[string]interface{}{
-		"task_id":                   task.StaticReport.TaskID,
-		"analyzer":                  task.StaticReport.Analyzer,
-		"analysis_mode":             task.StaticReport.AnalysisMode,
-		"status":                    task.StaticReport.Status,
-		"package_name":              task.StaticReport.PackageName,
-		"version_name":              task.StaticReport.VersionName,
-		"version_code":              task.StaticReport.VersionCode,
-		"app_name":                  task.StaticReport.AppName,
-		"file_size":                 task.StaticReport.FileSize,
-		"md5":                       task.StaticReport.MD5,
-		"sha256":                    task.StaticReport.SHA256,
-		"developer":                 task.StaticReport.Developer,
-		"company_name":              task.StaticReport.CompanyName,
-		"activity_count":            task.StaticReport.ActivityCount,
-		"service_count":             task.StaticReport.ServiceCount,
-		"receiver_count":            task.StaticReport.ReceiverCount,
-		"provider_count":            task.StaticReport.ProviderCount,
-		"permission_count":          task.StaticReport.PermissionCount,
-		"url_count":                 task.StaticReport.URLCount,
-		"domain_count":              task.StaticReport.DomainCount,
-		"basic_info":                basicInfo,
-		"deep_analysis":             deepAnalysis,
-		"analysis_duration_ms":      task.StaticReport.AnalysisDurationMs,
-		"fast_analysis_duration_ms": task.StaticReport.FastAnalysisDurationMs,
-		"deep_analysis_duration_ms": task.StaticReport.DeepAnalysisDurationMs,
+		"task_id":                    task.StaticReport.TaskID,
+		"analyzer":                   task.StaticReport.Analyzer,
+		"analysis_mode":              task.StaticReport.AnalysisMode,
+		"status":                     task.StaticReport.Status,
+		"package_name":               task.StaticReport.PackageName,
+		"version_name":               task.StaticReport.VersionName,
+		"version_code":               task.StaticReport.VersionCode,
+		"app_name":                   task.StaticReport.AppName,
+		"file_size":                  task.StaticReport.FileSize,
+		"md5":                        task.StaticReport.MD5,
+		"sha256":                     task.StaticReport.SHA256,
+		"developer":                  task.StaticReport.Developer,
+		"company_name":               task.StaticReport.CompanyName,
+		"activity_count":             task.StaticReport.ActivityCount,
+		"service_count":              task.StaticReport.ServiceCount,
+		"receiver_count":             task.StaticReport.ReceiverCount,
+		"provider_count":             task.StaticReport.ProviderCount,
+		"permission_count":           task.StaticReport.PermissionCount,
+		"url_count":                  task.StaticReport.URLCount,
+		"domain_count":               task.StaticReport.DomainCount,
+		"basic_info":                 basicInfo,
+		"deep_analysis":              deepAnalysis,
+		"analysis_duration_ms":       task.StaticReport.AnalysisDurationMs,
+		"fast_analysis_duration_ms":  task.StaticReport.FastAnalysisDurationMs,
+		"deep_analysis_duration_ms":  task.StaticReport.DeepAnalysisDurationMs,
 		"needs_deep_analysis_reason": task.StaticReport.NeedsDeepAnalysisReason,
-		"analyzed_at":               task.StaticReport.AnalyzedAt,
+		"analyzed_at":                task.StaticReport.AnalyzedAt,
 		// 壳检测相关
 		"is_packed":                    task.StaticReport.IsPacked,
 		"packer_name":                  task.StaticReport.PackerName,

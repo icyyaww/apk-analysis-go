@@ -9,6 +9,20 @@ import (
 	"gorm.io/gorm"
 )
 
+// TaskFilterOptions 任务筛选选项
+type TaskFilterOptions struct {
+	ExcludeStatus   string     // 排除的状态
+	StatusFilter    string     // 状态过滤
+	Search          string     // 搜索关键词
+	Province        string     // 省份
+	ISP             string     // ISP
+	BeianStatus     string     // 备案状态
+	CompletedAfter  *time.Time // 完成时间起始
+	CompletedBefore *time.Time // 完成时间结束
+	MinConfidence   *float64   // 最小置信度
+	MaxConfidence   *float64   // 最大置信度
+}
+
 type TaskRepository interface {
 	Create(ctx context.Context, task *domain.Task) error
 	Update(ctx context.Context, task *domain.Task) error
@@ -50,6 +64,10 @@ type TaskRepository interface {
 	ListWithStatusFilter(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string) ([]*domain.Task, int64, error)
 	// 获取任务列表（支持状态过滤、排除和搜索）
 	ListWithSearch(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string) ([]*domain.Task, int64, error)
+	// 获取任务列表（支持状态过滤、排除、搜索和高级筛选）
+	ListWithAdvancedFilters(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string, province string, isp string, beianStatus string) ([]*domain.Task, int64, error)
+	// 获取任务列表（支持所有筛选条件，包括完成时间和置信度）
+	ListWithFilterOptions(ctx context.Context, page int, pageSize int, opts *TaskFilterOptions) ([]*domain.Task, int64, error)
 	// 获取所有排队中的任务（不分页）
 	ListQueuedTasks(ctx context.Context) ([]*domain.Task, error)
 }
@@ -859,8 +877,8 @@ func (r *taskRepo) ListWithStatusFilter(ctx context.Context, page int, pageSize 
 		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
 		}).
-		// 按完成时间倒序（最新的在前）
-		Order("completed_at DESC, created_at DESC").
+		// 按状态优先级排序，然后按完成时间倒序（最新完成的在前）
+		Order("CASE status WHEN 'running' THEN 1 WHEN 'installing' THEN 2 WHEN 'collecting' THEN 3 WHEN 'completed' THEN 4 WHEN 'failed' THEN 5 ELSE 6 END, completed_at DESC, created_at DESC").
 		Offset(offset).
 		Limit(pageSize).
 		Find(&tasks).Error
@@ -910,6 +928,12 @@ func (r *taskRepo) ListWithSearch(ctx context.Context, page int, pageSize int, e
 		query = query.Where("apk_name LIKE ? OR app_name LIKE ? OR package_name LIKE ?", searchPattern, searchPattern, searchPattern)
 	}
 
+	orderBy := "completed_at DESC, created_at DESC"
+	if statusFilter == "" {
+		// "全部"列表按创建时间倒序，避免 COALESCE 导致无法走索引
+		orderBy = "created_at DESC"
+	}
+
 	err := query.
 		Preload("StaticReport", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "task_id", "status", "url_count", "domain_count", "analysis_mode")
@@ -926,10 +950,261 @@ func (r *taskRepo) ListWithSearch(ctx context.Context, page int, pageSize int, e
 		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
 			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
 		}).
-		// 按完成时间倒序（最新的在前）
-		Order("completed_at DESC, created_at DESC").
+		// 列表排序：全部按开始时间，其余按完成时间
+		Order(orderBy).
 		Offset(offset).
 		Limit(pageSize).
+		Find(&tasks).Error
+
+	return tasks, total, err
+}
+
+func (r *taskRepo) ListWithAdvancedFilters(ctx context.Context, page int, pageSize int, excludeStatus string, statusFilter string, search string, province string, isp string, beianStatus string) ([]*domain.Task, int64, error) {
+	var tasks []*domain.Task
+	var total int64
+
+	orderBy := "apk_tasks.completed_at DESC, apk_tasks.created_at DESC"
+	orderByAggregate := "MAX(apk_tasks.completed_at) DESC, MAX(apk_tasks.created_at) DESC"
+	if statusFilter == "" {
+		orderBy = "apk_tasks.created_at DESC"
+		orderByAggregate = "MAX(apk_tasks.created_at) DESC"
+	}
+
+	countQuery := r.applyTaskFilters(ctx, excludeStatus, statusFilter, search, province, isp, beianStatus).
+		Select("apk_tasks.id").
+		Distinct("apk_tasks.id")
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+
+	var taskIDs []string
+	idQuery := r.applyTaskFilters(ctx, excludeStatus, statusFilter, search, province, isp, beianStatus).
+		Select("apk_tasks.id").
+		Group("apk_tasks.id").
+		Order(orderByAggregate).
+		Offset(offset).
+		Limit(pageSize)
+	if err := idQuery.Pluck("apk_tasks.id", &taskIDs).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if len(taskIDs) == 0 {
+		return []*domain.Task{}, total, nil
+	}
+
+	err := r.db.WithContext(ctx).
+		Where("id IN ?", taskIDs).
+		Preload("StaticReport", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "url_count", "domain_count", "analysis_mode")
+		}).
+		Preload("DomainAnalysis", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "primary_domain_json", "domain_beian_json", "app_domains_json")
+		}).
+		Preload("AppDomains", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "domain", "ip", "province", "city", "isp", "source")
+		}).
+		Preload("Activities", func(db *gorm.DB) *gorm.DB {
+			return db.Select("task_id", "activity_details_json")
+		}).
+		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
+		}).
+		Order(orderBy).
+		Find(&tasks).Error
+
+	return tasks, total, err
+}
+
+func (r *taskRepo) applyTaskFilters(ctx context.Context, excludeStatus string, statusFilter string, search string, province string, isp string, beianStatus string) *gorm.DB {
+	query := r.db.WithContext(ctx).Model(&domain.Task{})
+
+	if excludeStatus != "" {
+		query = query.Where("apk_tasks.status != ?", excludeStatus)
+	}
+	if statusFilter != "" {
+		query = query.Where("apk_tasks.status = ?", statusFilter)
+	}
+	if search != "" {
+		searchPattern := "%" + search + "%"
+		query = query.Where("apk_tasks.apk_name LIKE ? OR apk_tasks.app_name LIKE ? OR apk_tasks.package_name LIKE ?", searchPattern, searchPattern, searchPattern)
+	}
+	if province != "" || isp != "" {
+		query = query.Joins("JOIN task_app_domains ON task_app_domains.task_id = apk_tasks.id")
+		if province != "" {
+			query = query.Where("task_app_domains.province = ?", province)
+		}
+		if isp != "" {
+			ispPattern := "%" + isp + "%"
+			query = query.Where("task_app_domains.isp LIKE ?", ispPattern)
+		}
+	}
+	if beianStatus != "" {
+		query = query.Joins("JOIN task_domain_analysis ON task_domain_analysis.task_id = apk_tasks.id")
+		condition, args := buildBeianStatusFilter(beianStatus)
+		query = query.Where(condition, args...)
+	}
+
+	return query
+}
+
+func buildBeianStatusFilter(beianStatus string) (string, []interface{}) {
+	switch beianStatus {
+	case "已备案":
+		return "(task_domain_analysis.domain_beian_status = ? OR ((task_domain_analysis.domain_beian_status IS NULL OR task_domain_analysis.domain_beian_status = '') AND (task_domain_analysis.domain_beian_json LIKE ? OR task_domain_analysis.domain_beian_json LIKE ? OR task_domain_analysis.domain_beian_json LIKE ?)))",
+			[]interface{}{
+				"已备案",
+				"%\"status\":\"registered\"%",
+				"%\"status\":\"ok\"%",
+				"%\"status\":\"已备案\"%",
+			}
+	case "未备案":
+		return "(task_domain_analysis.domain_beian_status = ? OR ((task_domain_analysis.domain_beian_status IS NULL OR task_domain_analysis.domain_beian_status = '') AND (task_domain_analysis.domain_beian_json LIKE ? OR task_domain_analysis.domain_beian_json LIKE ? OR task_domain_analysis.domain_beian_json LIKE ? OR (task_domain_analysis.domain_beian_json LIKE ? AND task_domain_analysis.domain_beian_json LIKE ?))))",
+			[]interface{}{
+				"未备案",
+				"%\"status\":\"not_registered\"%",
+				"%\"status\":\"not_found\"%",
+				"%\"status\":\"未备案\"%",
+				"%\"status\":\"error\"%",
+				"%暂无数据%",
+			}
+	case "查询失败":
+		return "(task_domain_analysis.domain_beian_status = ? OR ((task_domain_analysis.domain_beian_status IS NULL OR task_domain_analysis.domain_beian_status = '') AND (task_domain_analysis.domain_beian_json LIKE ? OR (task_domain_analysis.domain_beian_json LIKE ? AND task_domain_analysis.domain_beian_json NOT LIKE ?))))",
+			[]interface{}{
+				"查询失败",
+				"%\"status\":\"查询失败\"%",
+				"%\"status\":\"error\"%",
+				"%暂无数据%",
+			}
+	default:
+		return "task_domain_analysis.domain_beian_status = ?", []interface{}{beianStatus}
+	}
+}
+
+// applyTaskFiltersWithOptions 使用 TaskFilterOptions 应用所有筛选条件
+func (r *taskRepo) applyTaskFiltersWithOptions(ctx context.Context, opts *TaskFilterOptions) *gorm.DB {
+	query := r.db.WithContext(ctx).Model(&domain.Task{})
+
+	if opts == nil {
+		return query
+	}
+
+	// 基础状态筛选
+	if opts.ExcludeStatus != "" {
+		query = query.Where("apk_tasks.status != ?", opts.ExcludeStatus)
+	}
+	if opts.StatusFilter != "" {
+		query = query.Where("apk_tasks.status = ?", opts.StatusFilter)
+	}
+
+	// 搜索
+	if opts.Search != "" {
+		searchPattern := "%" + opts.Search + "%"
+		query = query.Where("apk_tasks.apk_name LIKE ? OR apk_tasks.app_name LIKE ? OR apk_tasks.package_name LIKE ?", searchPattern, searchPattern, searchPattern)
+	}
+
+	// 完成时间筛选
+	if opts.CompletedAfter != nil {
+		query = query.Where("apk_tasks.completed_at >= ?", opts.CompletedAfter)
+	}
+	if opts.CompletedBefore != nil {
+		query = query.Where("apk_tasks.completed_at <= ?", opts.CompletedBefore)
+	}
+
+	// 省份和ISP筛选（需要JOIN task_app_domains）
+	if opts.Province != "" || opts.ISP != "" {
+		query = query.Joins("JOIN task_app_domains ON task_app_domains.task_id = apk_tasks.id")
+		if opts.Province != "" {
+			query = query.Where("task_app_domains.province = ?", opts.Province)
+		}
+		if opts.ISP != "" {
+			ispPattern := "%" + opts.ISP + "%"
+			query = query.Where("task_app_domains.isp LIKE ?", ispPattern)
+		}
+	}
+
+	// 备案状态和置信度筛选（需要JOIN task_domain_analysis）
+	needDomainJoin := opts.BeianStatus != "" || opts.MinConfidence != nil || opts.MaxConfidence != nil
+	if needDomainJoin {
+		query = query.Joins("JOIN task_domain_analysis ON task_domain_analysis.task_id = apk_tasks.id")
+
+		// 备案状态筛选
+		if opts.BeianStatus != "" {
+			condition, args := buildBeianStatusFilter(opts.BeianStatus)
+			query = query.Where(condition, args...)
+		}
+
+		// 置信度筛选
+		if opts.MinConfidence != nil {
+			query = query.Where("task_domain_analysis.primary_domain_confidence >= ?", *opts.MinConfidence)
+		}
+		if opts.MaxConfidence != nil {
+			query = query.Where("task_domain_analysis.primary_domain_confidence <= ?", *opts.MaxConfidence)
+		}
+	}
+
+	return query
+}
+
+// ListWithFilterOptions 使用 TaskFilterOptions 获取任务列表
+func (r *taskRepo) ListWithFilterOptions(ctx context.Context, page int, pageSize int, opts *TaskFilterOptions) ([]*domain.Task, int64, error) {
+	var tasks []*domain.Task
+	var total int64
+
+	// 根据状态决定排序方式
+	orderBy := "apk_tasks.completed_at DESC, apk_tasks.created_at DESC"
+	orderByAggregate := "MAX(apk_tasks.completed_at) DESC, MAX(apk_tasks.created_at) DESC"
+	if opts == nil || opts.StatusFilter == "" {
+		orderBy = "apk_tasks.created_at DESC"
+		orderByAggregate = "MAX(apk_tasks.created_at) DESC"
+	}
+
+	// 统计总数
+	countQuery := r.applyTaskFiltersWithOptions(ctx, opts).
+		Select("apk_tasks.id").
+		Distinct("apk_tasks.id")
+	if err := countQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+
+	// 获取分页的任务ID列表
+	var taskIDs []string
+	idQuery := r.applyTaskFiltersWithOptions(ctx, opts).
+		Select("apk_tasks.id").
+		Group("apk_tasks.id").
+		Order(orderByAggregate).
+		Offset(offset).
+		Limit(pageSize)
+	if err := idQuery.Pluck("apk_tasks.id", &taskIDs).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if len(taskIDs) == 0 {
+		return []*domain.Task{}, total, nil
+	}
+
+	// 加载完整的任务数据
+	err := r.db.WithContext(ctx).
+		Where("id IN ?", taskIDs).
+		Preload("StaticReport", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "url_count", "domain_count", "analysis_mode")
+		}).
+		Preload("DomainAnalysis", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "primary_domain_json", "primary_domain_confidence", "domain_beian_json", "app_domains_json")
+		}).
+		Preload("AppDomains", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "domain", "ip", "province", "city", "isp", "source")
+		}).
+		Preload("Activities", func(db *gorm.DB) *gorm.DB {
+			return db.Select("task_id", "activity_details_json")
+		}).
+		Preload("MalwareResult", func(db *gorm.DB) *gorm.DB {
+			return db.Select("id", "task_id", "status", "is_malware", "confidence", "predicted_family")
+		}).
+		Order(orderBy).
 		Find(&tasks).Error
 
 	return tasks, total, err
